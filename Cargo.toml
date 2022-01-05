@@ -1,0 +1,16 @@
+[package]
+name = "reports"
+version = "0.1.0"
+edition = "2021"
+default-run = "main"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+itertools = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+handlebars = "4.1"
+rusqlite = { version = "0.26", features = ["serde_json", "chrono"] }
+chrono = { version = "0.4", features = ["serde"] }
+num-traits = "0.2"
