@@ -37,20 +37,22 @@ fn main() {
 
     let metrics = Metric::read().expect("Error reading metrics from database");
 
-    let users_points = Datapoint::read(match metrics.get("users") {
-        Some(metric) => metric.clone(),
-        None => panic!("Couldn't find users in database"),
-    })
-    .expect("Couldn't read users datapoint");
+    let [users_m, users_change_m, website_visits_m] = ["users", "users_change", "website_visits"]
+        .map(|name| -> Metric {
+            if let Some(metric) = metrics.get(name) {
+                metric.clone()
+            } else {
+                panic!("Couldn't find {} in the database", name)
+            }
+        });
+
+    let users_points = Datapoint::read(users_m).expect("Couldn't read users datapoint");
 
     let website_users_change = FigChange::new(
-        match metrics.get("users_change") {
-            Some(metric) => metric.clone(),
-            None => panic!("Couldn't find metric in database"),
-        },
-        users_points[1].when(),
-        users_points[0].value(),
-        users_points[1].value(),
+        users_change_m,
+        *users_points[1].when(),
+        users_points[0].fig(),
+        users_points[1].fig(),
     );
 
     println!(

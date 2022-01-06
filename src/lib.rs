@@ -93,6 +93,12 @@ pub trait Figure {
         )
     }
 
+    fn averaged(&self, frequency: TimeFrequency) -> f64 {
+        self.fig()
+            / TimeFrequency::divide(&frequency, &self.metric_info().frequency)
+                .expect("Cannot average accurately")
+    }
+
     fn metric_info(&self) -> &Metric;
     fn when(&self) -> &NaiveDate;
     fn fig(&self) -> f64;
@@ -273,14 +279,31 @@ impl Datapoint {
 
         points
     }
+}
 
-    pub fn value(&self) -> f64 {
+impl Figure for Datapoint {
+    fn metric_info(&self) -> &Metric {
+        &self.metric
+    }
+
+    fn when(&self) -> &NaiveDate {
+        &self.when
+    }
+
+    fn fig(&self) -> f64 {
         self.value
     }
+}
+
+impl Display for Datapoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:.1}", self.fig())
+    }
+}
 
     pub fn when(&self) -> NaiveDate {
         self.when
-    }
+}
 
     pub fn averaged(&self, frequency: TimeFrequency) -> f64 {
         self.value
