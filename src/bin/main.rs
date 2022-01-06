@@ -54,8 +54,9 @@ fn main() {
     );
 
     println!(
-        "{} - we are now averaging {} users per day.",
-        website_users_change, 833.71
+        "{} - we are now averaging {:.1} users per day.",
+        website_users_change,
+        users_points[1].averaged(TimeFrequency::Daily)
     );
 
     let website_visits_change = FigChange::new(

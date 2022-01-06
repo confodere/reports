@@ -5,16 +5,71 @@ use chrono::NaiveDate;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use rusqlite::{params, Connection, Error, ToSql};
+use rusqlite::{params, Connection, ToSql};
 
 const DATABASE_FILE: &str = "ignore/data.db";
 
+#[derive(Debug, Clone)]
+pub struct TimeFrequencyMismatch {
+    pub message: String,
+}
+
+impl fmt::Display for TimeFrequencyMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TimeFrequency is not cross compatible: {}", self.message)
+    }
+}
+
+impl std::error::Error for TimeFrequencyMismatch {}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum TimeFrequency {
-    Yearly,
-    Monthly,
-    Weekly,
-    Daily,
+    Yearly = 1,
+    Quarterly = 4,
+    Monthly = 12,
+    Weekly = 2,
+    Daily = 14,
+}
+
+impl TimeFrequency {
+    fn from_str(variant: String) -> Result<TimeFrequency, &'static str> {
+        Ok(match variant.as_str() {
+            "Yearly" => TimeFrequency::Yearly,
+            "Quarterly" => TimeFrequency::Quarterly,
+            "Monthly" => TimeFrequency::Monthly,
+            "Weekly" => TimeFrequency::Weekly,
+            "Daily" => TimeFrequency::Daily,
+            _ => return Err("Read TimeFrequency not found"),
+        })
+    }
+
+    /// Returns how many numerator are in denominator,
+    /// but only if TimeFrequencies can be divided evenly.
+    ///
+    /// Assumes that Monthly, Quarterly, and Yearly can be freely converted.
+    /// As well as Daily and Weekly.
+    /// But that these two groups are incompatible.
+    ///
+    /// ## Panics
+    /// Panics if attempting to cross convert (Months, Quarters, Years) and (Days, Weeks)
+    pub fn divide(
+        numerator: &TimeFrequency,
+        denominator: &TimeFrequency,
+    ) -> Result<f64, TimeFrequencyMismatch> {
+        // Assumes small and large are mutually exclusive
+        // Enum discriminants are used compare variants
+        let (small, large) = ([2, 14], [1, 4, 12]);
+        let (numerator, denominator) = (numerator.clone() as i32, denominator.clone() as i32);
+        if (large.contains(&numerator) && large.contains(&denominator))
+            | (small.contains(&numerator) && small.contains(&denominator))
+        {
+            Ok(numerator as f64 / denominator as f64)
+        } else {
+            Err(TimeFrequencyMismatch {
+                message: denominator.to_string(),
+            })
+        }
+    }
 }
 
 impl ToSql for TimeFrequency {
@@ -40,6 +95,7 @@ pub trait Figure {
 
     fn metric_info(&self) -> &Metric;
     fn when(&self) -> &NaiveDate;
+    fn fig(&self) -> f64;
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -73,14 +129,13 @@ impl Metric {
             conn.prepare("SELECT name, description, print_text, frequency FROM metric")?;
 
         let metric_iter = stmt.query_map([], |row| {
-            let freq = match row.get::<_, String>(3)?.as_str() {
-                "Yearly" => TimeFrequency::Yearly,
-                "Monthly" => TimeFrequency::Monthly,
-                "Weekly" => TimeFrequency::Weekly,
-                "Daily" => TimeFrequency::Daily,
-                _ => return Err(Error::InvalidQuery),
-            };
-            Ok(Metric::new(row.get(0)?, row.get(1)?, row.get(2)?, freq))
+            Ok(Metric::new(
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                TimeFrequency::from_str(row.get(3)?)
+                    .expect("Couldn't match TimeFrequency read from database"),
+            ))
         })?;
 
         let mut found: HashMap<String, Metric> = HashMap::new();
@@ -123,6 +178,10 @@ pub struct FigChange {
 }
 
 impl Figure for FigChange {
+    fn fig(&self) -> f64 {
+        (self.new - self.old) / self.old
+    }
+
     fn metric_info(&self) -> &Metric {
         &self.metric
     }
@@ -142,20 +201,10 @@ impl FigChange {
         }
     }
 
-    fn diff(&self) -> f64 {
-        (self.new - self.old) / self.old
-    }
-
     fn diff_format(&self) -> String {
-        let diff = self.diff();
+        let diff = self.fig();
         let mut output = String::new();
-        output.push_str({
-            if diff > 0.0 {
-                "up"
-            } else {
-                "down"
-            }
-        });
+        output.push_str(if diff > 0.0 { "up" } else { "down" });
         output.push_str(&format!(" {:.1}%", (100.0 * diff.abs())));
         output
     }
@@ -231,6 +280,12 @@ impl Datapoint {
 
     pub fn when(&self) -> NaiveDate {
         self.when
+    }
+
+    pub fn averaged(&self, frequency: TimeFrequency) -> f64 {
+        self.value
+            / TimeFrequency::divide(&frequency, &self.metric.frequency)
+                .expect("Cannot average accurately")
     }
 }
 
