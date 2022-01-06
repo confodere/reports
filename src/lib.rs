@@ -159,10 +159,10 @@ impl Metric {
 
         conn.execute(
             r#"CREATE TABLE IF NOT EXISTS metric (
-            name TEXT PRIMARY KEY, 
-            description TEXT, 
-            print_text TEXT, 
-            frequency TEXT)"#,
+			name TEXT PRIMARY KEY, 
+			description TEXT, 
+			print_text TEXT, 
+			frequency TEXT)"#,
             [],
         )?;
 
@@ -206,14 +206,6 @@ impl FigChange {
             when,
         }
     }
-
-    fn diff_format(&self) -> String {
-        let diff = self.fig();
-        let mut output = String::new();
-        output.push_str(if diff > 0.0 { "up" } else { "down" });
-        output.push_str(&format!(" {:.1}%", (100.0 * diff.abs())));
-        output
-    }
 }
 
 impl Display for FigChange {
@@ -221,7 +213,10 @@ impl Display for FigChange {
         write!(
             f,
             "{}",
-            self.format(&self.metric.print_text, self.diff_format())
+            self.format(
+                &self.metric.print_text,
+                DisplayType::DescribedPercentage(self.fig()).to_string()
+            )
         )
     }
 }
@@ -246,11 +241,11 @@ impl Datapoint {
 
         conn.execute(
             r#"CREATE TABLE IF NOT EXISTS data (
-            metric_name TEXT NOT NULL, 
-            naive_date TEXT NOT NULL, 
-            val REAL, 
-            PRIMARY KEY (metric_name, naive_date), 
-            FOREIGN KEY(metric_name) REFERENCES metric(name))"#,
+			metric_name TEXT NOT NULL, 
+			naive_date TEXT NOT NULL, 
+			val REAL, 
+			PRIMARY KEY (metric_name, naive_date), 
+			FOREIGN KEY(metric_name) REFERENCES metric(name))"#,
             [],
         )?;
 
@@ -297,12 +292,13 @@ impl Figure for Datapoint {
 
 impl Display for Datapoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:.1}", self.fig())
+        DisplayType::Rounded(self.fig()).fmt(f)
     }
 }
 
 pub enum DisplayType {
     JoinStatement(String, String),
+    Rounded(f64),
     Percentage(f64),
     DescribedPercentage(f64),
     PerFrequency(f64, TimeFrequency),
@@ -312,10 +308,11 @@ impl Display for DisplayType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DisplayType::JoinStatement(one, two) => write!(f, "{}—{}", one, two),
-            DisplayType::Percentage(fig) => write!(f, "{:.1}", fig),
+            DisplayType::Rounded(fig) => write!(f, "{:.1}", fig),
+            DisplayType::Percentage(fig) => write!(f, "{:.1}%", (100.0 * fig)),
             DisplayType::DescribedPercentage(fig) => {
                 let description = if fig > &0.0 { "up" } else { "down" };
-                write!(f, "{} {}", description, fig)
+                write!(f, "{} {:.1}%", description, (100.0 * fig.abs()))
             }
             DisplayType::PerFrequency(fig, freq) => write!(
                 f,
