@@ -301,14 +301,35 @@ impl Display for Datapoint {
     }
 }
 
-    pub fn when(&self) -> NaiveDate {
-        self.when
+pub enum DisplayType {
+    JoinStatement(String, String),
+    Percentage(f64),
+    DescribedPercentage(f64),
+    PerFrequency(f64, TimeFrequency),
 }
 
-    pub fn averaged(&self, frequency: TimeFrequency) -> f64 {
-        self.value
-            / TimeFrequency::divide(&frequency, &self.metric.frequency)
-                .expect("Cannot average accurately")
+impl Display for DisplayType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DisplayType::JoinStatement(one, two) => write!(f, "{}—{}", one, two),
+            DisplayType::Percentage(fig) => write!(f, "{:.1}", fig),
+            DisplayType::DescribedPercentage(fig) => {
+                let description = if fig > &0.0 { "up" } else { "down" };
+                write!(f, "{} {}", description, fig)
+            }
+            DisplayType::PerFrequency(fig, freq) => write!(
+                f,
+                "{:.1} per {}",
+                fig,
+                match freq {
+                    TimeFrequency::Yearly => "year",
+                    TimeFrequency::Quarterly => "quarter",
+                    TimeFrequency::Monthly => "month",
+                    TimeFrequency::Weekly => "week",
+                    TimeFrequency::Daily => "day",
+                }
+            ),
+        }
     }
 }
 

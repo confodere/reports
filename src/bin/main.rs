@@ -56,20 +56,16 @@ fn main() {
     );
 
     println!(
-        "{} - we are now averaging {:.1} users per day.",
+        "{} - we are now averaging {}.",
         website_users_change,
-        users_points[1].averaged(TimeFrequency::Daily)
+        DisplayType::PerFrequency(
+            users_points[1].averaged(TimeFrequency::Daily),
+            TimeFrequency::Daily
+        )
     );
 
-    let website_visits_change = FigChange::new(
-        match metrics.get("website_visits") {
-            Some(metric) => metric.clone(),
-            None => panic!("Couldn't find metric in database"),
-        },
-        Utc::today().naive_utc(),
-        100.0,
-        164.58,
-    );
+    let website_visits_change =
+        FigChange::new(website_visits_m, Utc::today().naive_utc(), 100.0, 164.58);
 
     println!(
         "{} ({})",
