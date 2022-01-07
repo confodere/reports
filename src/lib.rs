@@ -93,9 +93,9 @@ pub trait Figure {
         )
     }
 
-    fn averaged(&self, frequency: TimeFrequency) -> f64 {
+    fn averaged(&self, frequency: &TimeFrequency) -> f64 {
         self.fig()
-            / TimeFrequency::divide(&frequency, &self.metric_info().frequency)
+            / TimeFrequency::divide(frequency, &self.metric_info().frequency)
                 .expect("Cannot average accurately")
     }
 
@@ -215,12 +215,13 @@ impl Display for FigChange {
             "{}",
             self.format(
                 &self.metric.print_text,
-                DisplayType::DescribedPercentage(self.fig()).to_string()
+                DisplayType::DescribedPercentage(self).to_string()
             )
         )
     }
 }
 
+#[derive(Clone)]
 pub struct Datapoint {
     value: f64,
     metric: Metric,
@@ -292,32 +293,30 @@ impl Figure for Datapoint {
 
 impl Display for Datapoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        DisplayType::Rounded(self.fig()).fmt(f)
+        DisplayType::Rounded(self).fmt(f)
     }
 }
 
-pub enum DisplayType {
-    JoinStatement(String, String),
-    Rounded(f64),
-    Percentage(f64),
-    DescribedPercentage(f64),
-    PerFrequency(f64, TimeFrequency),
+pub enum DisplayType<'a, T: Figure> {
+    Rounded(&'a T),
+    Percentage(&'a T),
+    DescribedPercentage(&'a T),
+    PerFrequency(&'a T, &'a TimeFrequency),
 }
 
-impl Display for DisplayType {
+impl<'a, T: Figure> Display for DisplayType<'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DisplayType::JoinStatement(one, two) => write!(f, "{}—{}", one, two),
-            DisplayType::Rounded(fig) => write!(f, "{:.1}", fig),
-            DisplayType::Percentage(fig) => write!(f, "{:.1}%", (100.0 * fig)),
+            DisplayType::Rounded(fig) => write!(f, "{:.1}", fig.fig()),
+            DisplayType::Percentage(fig) => write!(f, "{:.1}%", (100.0 * fig.fig())),
             DisplayType::DescribedPercentage(fig) => {
-                let description = if fig > &0.0 { "up" } else { "down" };
-                write!(f, "{} {:.1}%", description, (100.0 * fig.abs()))
+                let description = if fig.fig() > 0.0 { "up" } else { "down" };
+                write!(f, "{} {:.1}%", description, (100.0 * fig.fig().abs()))
             }
             DisplayType::PerFrequency(fig, freq) => write!(
                 f,
                 "{:.1} per {}",
-                fig,
+                fig.averaged(freq),
                 match freq {
                     TimeFrequency::Yearly => "year",
                     TimeFrequency::Quarterly => "quarter",
@@ -326,6 +325,18 @@ impl Display for DisplayType {
                     TimeFrequency::Daily => "day",
                 }
             ),
+        }
+    }
+}
+
+pub enum FormatType {
+    JoinStatement(String, String),
+}
+
+impl Display for FormatType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FormatType::JoinStatement(one, two) => write!(f, "{}—{}", one, two),
         }
     }
 }

@@ -58,10 +58,7 @@ fn main() {
     println!(
         "{} - we are now averaging {}.",
         website_users_change,
-        DisplayType::PerFrequency(
-            users_points[1].averaged(TimeFrequency::Daily),
-            TimeFrequency::Daily
-        )
+        DisplayType::PerFrequency(&users_points[1], &TimeFrequency::Daily)
     );
 
     let website_visits_change =
