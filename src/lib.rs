@@ -1,7 +1,7 @@
 use core::fmt;
 use std::{collections::HashMap, fmt::Display};
 
-use chrono::NaiveDate;
+use chrono::{Datelike, IsoWeek, NaiveDate};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
@@ -78,6 +78,53 @@ impl ToSql for TimeFrequency {
     }
 }
 
+type Year = i32;
+type Quarter = u8;
+type Month = u32;
+
+/// TimePeriod allows a NaiveDate to be expressed with the specificity implicit in each TimeFrequency variant,
+/// i.e. all dates in a month have the same TimePeriod::Month value
+///
+/// # Examples
+///
+/// ```
+/// use chrono::NaiveDate;
+/// use reports::{TimeFrequency, TimePeriod};
+///
+/// let date = NaiveDate::from_ymd(2022, 6, 6);
+/// let freq = TimeFrequency::Quarterly;
+/// let time_period = TimePeriod::new(date, freq);
+///
+/// if let TimePeriod::Quarter(year, quarter) = time_period {
+/// 	assert_eq!(year, 2022);
+/// 	assert_eq!(quarter, 2);
+/// }
+///
+/// ```
+#[derive(Debug)]
+pub enum TimePeriod {
+    Year(Year),
+    // Quarter is expressed as (Jan, Feb, Mar) = 1, (Apr, May, Jun) = 2, (Jul, Aug, Sep) = 3, (Oct, Nov, Dec) = 4
+    Quarter(Year, Quarter),
+    Month(Year, Month),
+    Week(IsoWeek),
+    Day(NaiveDate),
+}
+
+impl TimePeriod {
+    pub fn new(date: &NaiveDate, frequency: &TimeFrequency) -> TimePeriod {
+        match frequency {
+            TimeFrequency::Yearly => TimePeriod::Year(date.year()),
+            TimeFrequency::Quarterly => {
+                TimePeriod::Quarter(date.year(), ((date.month0() / 3) + 1) as u8)
+            }
+            TimeFrequency::Monthly => TimePeriod::Month(date.year(), date.month()),
+            TimeFrequency::Weekly => TimePeriod::Week(date.iso_week()),
+            TimeFrequency::Daily => TimePeriod::Day(date.clone()),
+        }
+    }
+}
+
 pub trait Figure {
     /// Inserts data into description by replacing the characters {} in the description
     /// Panics if {} not present in description
@@ -99,8 +146,13 @@ pub trait Figure {
                 .expect("Cannot average accurately")
     }
 
+    fn period(&self) -> TimePeriod {
+        TimePeriod::new(self.when(), &self.metric_info().frequency)
+    }
+
     fn metric_info(&self) -> &Metric;
     fn when(&self) -> &NaiveDate;
+
     fn fig(&self) -> f64;
 }
 

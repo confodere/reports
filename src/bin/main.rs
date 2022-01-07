@@ -55,6 +55,8 @@ fn main() {
         users_points[1].fig(),
     );
 
+    println!("{:#?}", website_users_change.period());
+
     println!(
         "{} - we are now averaging {}.",
         website_users_change,
