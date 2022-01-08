@@ -1,7 +1,7 @@
 use core::fmt;
 use std::{collections::HashMap, fmt::Display};
 
-use chrono::{Datelike, IsoWeek, NaiveDate};
+use chrono::{Datelike, Duration, IsoWeek, NaiveDate, Weekday};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
@@ -93,7 +93,7 @@ type Month = u32;
 ///
 /// let date = NaiveDate::from_ymd(2022, 6, 6);
 /// let freq = TimeFrequency::Quarterly;
-/// let time_period = TimePeriod::new(date, freq);
+/// let time_period = TimePeriod::new(&date, &freq);
 ///
 /// if let TimePeriod::Quarter(year, quarter) = time_period {
 /// 	assert_eq!(year, 2022);
@@ -121,6 +121,57 @@ impl TimePeriod {
             TimeFrequency::Monthly => TimePeriod::Month(date.year(), date.month()),
             TimeFrequency::Weekly => TimePeriod::Week(date.iso_week()),
             TimeFrequency::Daily => TimePeriod::Day(date.clone()),
+        }
+    }
+
+    pub fn start_date(self) -> NaiveDate {
+        match self {
+            TimePeriod::Year(year) => NaiveDate::from_ymd(year, 1, 1),
+            TimePeriod::Quarter(year, quarter) => {
+                NaiveDate::from_ymd(year, (quarter * 3 - 1) as u32, 1)
+            }
+            TimePeriod::Month(year, month) => NaiveDate::from_ymd(year, month, 1),
+            TimePeriod::Week(week) => {
+                NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon)
+            }
+            TimePeriod::Day(date) => date,
+        }
+    }
+
+    /// The next relevant TimePeriod
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use reports::TimePeriod;
+    /// let q4 = TimePeriod::Quarter(2022, 4);
+    /// assert!(matches!(q4.succ(), TimePeriod::Quarter(2023, 1)))
+    /// ```
+    pub fn succ(&self) -> TimePeriod {
+        match self {
+            TimePeriod::Year(year) => TimePeriod::Year(year + 1),
+            TimePeriod::Quarter(year, quarter) => {
+                if quarter < &4 {
+                    TimePeriod::Quarter(*year, quarter + 1)
+                } else {
+                    TimePeriod::Quarter(year + 1, 1)
+                }
+            }
+            TimePeriod::Month(year, month) => {
+                if month < &12 {
+                    TimePeriod::Month(*year, month + 1)
+                } else {
+                    TimePeriod::Month(year + 1, 1)
+                }
+            }
+            // Wrap around is handled by Chrono Durations for Week and Day
+            // as a year does not contain a constant amount of either
+            TimePeriod::Week(week) => TimePeriod::Week(
+                (NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon)
+                    + Duration::weeks(1))
+                .iso_week(),
+            ),
+            TimePeriod::Day(date) => TimePeriod::Day(*date + Duration::days(1)),
         }
     }
 }

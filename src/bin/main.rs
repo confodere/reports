@@ -56,6 +56,7 @@ fn main() {
     );
 
     println!("{:#?}", website_users_change.period());
+    println!("{:#?}", website_users_change.period().succ());
 
     println!(
         "{} - we are now averaging {}.",
