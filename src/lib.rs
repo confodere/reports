@@ -130,11 +130,39 @@ impl TimePeriod {
             TimePeriod::Quarter(year, quarter) => {
                 NaiveDate::from_ymd(year, (quarter * 3 - 1) as u32, 1)
             }
-            TimePeriod::Month(year, month) => NaiveDate::from_ymd(year, month, 1),
+            TimePeriod::Month(year, month) => NaiveDate::from_ymd(year, month.try_into().expect("Month doesn't fit`"), 1),
             TimePeriod::Week(week) => {
                 NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon)
             }
             TimePeriod::Day(date) => date,
+        }
+    }
+
+    fn next_or_prev(&self, change: i32) -> TimePeriod {
+        match self {
+            TimePeriod::Year(year) => TimePeriod::Year(year + change),
+            TimePeriod::Quarter(year, quarter) => {
+                if ((*quarter as i32) + change) <= 4 {
+                    TimePeriod::Quarter(*year, ((*quarter as i32) + change).try_into().expect("Couldn't create Quarter with such a value"))
+                } else {
+                    TimePeriod::Quarter(year + change, 1)
+                }
+            }
+            TimePeriod::Month(year, month) => {
+                if ((*month as i32) + change) <= 12 {
+                    TimePeriod::Month(*year, ((*month as i32) + change).try_into().expect("Couldn't create Month with such a value"))
+                } else {
+                    TimePeriod::Month(*year + change, 1)
+                }
+            }
+            // Wrap around is handled by Chrono Durations for Week and Day
+            // as a year does not contain a constant amount of either
+            TimePeriod::Week(week) => TimePeriod::Week(
+                (NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon)
+                    + Duration::weeks(change.into()))
+                .iso_week(),
+            ),
+            TimePeriod::Day(date) => TimePeriod::Day(*date + Duration::days(change.into())),
         }
     }
 
@@ -148,31 +176,12 @@ impl TimePeriod {
     /// assert!(matches!(q4.succ(), TimePeriod::Quarter(2023, 1)))
     /// ```
     pub fn succ(&self) -> TimePeriod {
-        match self {
-            TimePeriod::Year(year) => TimePeriod::Year(year + 1),
-            TimePeriod::Quarter(year, quarter) => {
-                if quarter < &4 {
-                    TimePeriod::Quarter(*year, quarter + 1)
-                } else {
-                    TimePeriod::Quarter(year + 1, 1)
-                }
-            }
-            TimePeriod::Month(year, month) => {
-                if month < &12 {
-                    TimePeriod::Month(*year, month + 1)
-                } else {
-                    TimePeriod::Month(year + 1, 1)
-                }
-            }
-            // Wrap around is handled by Chrono Durations for Week and Day
-            // as a year does not contain a constant amount of either
-            TimePeriod::Week(week) => TimePeriod::Week(
-                (NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon)
-                    + Duration::weeks(1))
-                .iso_week(),
-            ),
-            TimePeriod::Day(date) => TimePeriod::Day(*date + Duration::days(1)),
-        }
+        self.next_or_prev(1)
+    }
+
+    /// The previous relevant TimePeriod
+    pub fn prev(&self) -> TimePeriod {
+        self.next_or_prev(-1)
     }
 }
 
