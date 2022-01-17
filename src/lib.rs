@@ -1,4 +1,5 @@
 use core::fmt;
+use num_traits::FromPrimitive;
 use std::{collections::HashMap, fmt::Display};
 
 use chrono::{Datelike, Duration, IsoWeek, NaiveDate, Weekday};
@@ -130,7 +131,9 @@ impl TimePeriod {
             TimePeriod::Quarter(year, quarter) => {
                 NaiveDate::from_ymd(year, (quarter * 3 - 1) as u32, 1)
             }
-            TimePeriod::Month(year, month) => NaiveDate::from_ymd(year, month.try_into().expect("Month doesn't fit`"), 1),
+            TimePeriod::Month(year, month) => {
+                NaiveDate::from_ymd(year, month.try_into().expect("Month doesn't fit`"), 1)
+            }
             TimePeriod::Week(week) => {
                 NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon)
             }
@@ -142,17 +145,44 @@ impl TimePeriod {
         match self {
             TimePeriod::Year(year) => TimePeriod::Year(year + change),
             TimePeriod::Quarter(year, quarter) => {
-                if ((*quarter as i32) + change) <= 4 {
-                    TimePeriod::Quarter(*year, ((*quarter as i32) + change).try_into().expect("Couldn't create Quarter with such a value"))
+                let new_quarter = (*quarter as i32) + change;
+                if new_quarter <= 4 && new_quarter > 0 {
+                    TimePeriod::Quarter(
+                        *year,
+                        ((*quarter as i32) + change)
+                            .try_into()
+                            .expect("Couldn't create Quarter with such a value"),
+                    )
                 } else {
-                    TimePeriod::Quarter(year + change, 1)
+                    TimePeriod::Quarter(
+                        year + (change / 12) + if change > 0 { 1 } else { -1 },
+                        (change % 12 + if change < 0 { 13 } else { 0 })
+                            .try_into()
+                            .unwrap(),
+                    )
                 }
             }
             TimePeriod::Month(year, month) => {
-                if ((*month as i32) + change) <= 12 {
-                    TimePeriod::Month(*year, ((*month as i32) + change).try_into().expect("Couldn't create Month with such a value"))
+                let new_month = (*month as i32) + change;
+                if new_month <= 12 && new_month > 0 {
+                    TimePeriod::Month(
+                        *year,
+                        ((*month as i32) + change)
+                            .try_into()
+                            .expect("Couldn't create Month with such a value"),
+                    )
                 } else {
-                    TimePeriod::Month(*year + change, 1)
+                    if change > 0 {
+                        TimePeriod::Month(
+                            *year + (change / 12) + 1,
+                            (change % 12).try_into().unwrap(),
+                        )
+                    } else {
+                        TimePeriod::Month(
+                            *year + (change / 12) - 1,
+                            (change % 12 + 13).try_into().unwrap(),
+                        )
+                    }
                 }
             }
             // Wrap around is handled by Chrono Durations for Week and Day
@@ -180,6 +210,14 @@ impl TimePeriod {
     }
 
     /// The previous relevant TimePeriod
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use reports::TimePeriod;
+    /// let jan = TimePeriod::Month(2022, 1);
+    /// assert!(matches!(jan.prev(), TimePeriod::Month(2021, 12)))
+    /// ```
     pub fn prev(&self) -> TimePeriod {
         self.next_or_prev(-1)
     }
