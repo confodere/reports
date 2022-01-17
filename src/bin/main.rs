@@ -48,24 +48,17 @@ fn main() {
 
     let users_points = Datapoint::read(users_m).expect("Couldn't read users datapoint");
 
-    let website_users_change = FigChange::new(
-        users_change_m,
-        *users_points[1].when(),
-        users_points[0].fig(),
-        users_points[1].fig(),
-    );
-
-    println!("{}", website_users_change.period());
-    println!("{}", website_users_change.period().succ());
-    println!("{}", website_users_change.period().prev());
-
-    let time_period = TimePeriod::new(&Utc::today().naive_utc(), &TimeFrequency::Monthly);
-    println!("{}", time_period.prev());
+    let search_period = TimePeriod::new(&NaiveDate::from_ymd(2022, 2, 4), &TimeFrequency::Weekly);
+    let website_users_change =
+        FigChange::from_period(users_change_m, &search_period, &users_points).unwrap();
 
     println!(
         "{} - we are now averaging {}.",
         website_users_change,
-        DisplayType::PerFrequency(&users_points[1], &TimeFrequency::Daily)
+        DisplayType::PerFrequency(
+            users_points.get(&search_period).unwrap(),
+            &TimeFrequency::Daily
+        )
     );
 
     let website_visits_change =

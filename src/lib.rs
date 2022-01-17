@@ -1,6 +1,6 @@
 use core::fmt;
 use num_traits::FromPrimitive;
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, hash::Hash};
 
 use chrono::{Datelike, Duration, IsoWeek, NaiveDate, Weekday};
 use itertools::Itertools;
@@ -102,7 +102,7 @@ type Month = u32;
 /// }
 ///
 /// ```
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TimePeriod {
     Year(Year),
     // Quarter is expressed as (Jan, Feb, Mar) = 1, (Apr, May, Jun) = 2, (Jul, Aug, Sep) = 3, (Oct, Nov, Dec) = 4
@@ -125,23 +125,21 @@ impl TimePeriod {
         }
     }
 
-    pub fn start_date(self) -> NaiveDate {
+    pub fn start_date(&self) -> NaiveDate {
         match self {
-            TimePeriod::Year(year) => NaiveDate::from_ymd(year, 1, 1),
+            TimePeriod::Year(year) => NaiveDate::from_ymd(*year, 1, 1),
             TimePeriod::Quarter(year, quarter) => {
-                NaiveDate::from_ymd(year, (quarter * 3 - 1) as u32, 1)
+                NaiveDate::from_ymd(*year, (quarter * 3 - 1) as u32, 1)
             }
-            TimePeriod::Month(year, month) => {
-                NaiveDate::from_ymd(year, month.try_into().expect("Month doesn't fit`"), 1)
-            }
+            TimePeriod::Month(year, month) => NaiveDate::from_ymd(*year, *month, 1),
             TimePeriod::Week(week) => {
                 NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon)
             }
-            TimePeriod::Day(date) => date,
+            TimePeriod::Day(date) => *date,
         }
     }
 
-    pub fn end_date(self) -> NaiveDate {
+    pub fn end_date(&self) -> NaiveDate {
         self.next_or_prev(1).start_date() - Duration::days(1)
     }
 
@@ -292,6 +290,27 @@ impl Display for TimePeriod {
     }
 }
 
+impl Hash for TimePeriod {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            TimePeriod::Year(year) => year.hash(state),
+            TimePeriod::Quarter(year, quarter) => {
+                year.hash(state);
+                quarter.hash(state)
+            }
+            TimePeriod::Month(year, month) => {
+                year.hash(state);
+                month.hash(state)
+            }
+            TimePeriod::Week(week) => {
+                week.year().hash(state);
+                week.week().hash(state)
+            }
+            TimePeriod::Day(date) => date.hash(state),
+        }
+    }
+}
+
 fn ordinal_date(n: &u32) -> &str {
     let s = n.to_string();
     if s.ends_with("1") && !s.ends_with("11") {
@@ -391,10 +410,10 @@ impl Metric {
 
         conn.execute(
             r#"CREATE TABLE IF NOT EXISTS metric (
-			name TEXT PRIMARY KEY, 
-			description TEXT, 
-			print_text TEXT, 
-			frequency TEXT)"#,
+            name TEXT PRIMARY KEY, 
+            description TEXT, 
+            print_text TEXT, 
+            frequency TEXT)"#,
             [],
         )?;
 
@@ -438,6 +457,23 @@ impl FigChange {
             when,
         }
     }
+
+    pub fn from_period(
+        metric: Metric,
+        period: &TimePeriod,
+        datapoints: &HashMap<TimePeriod, Datapoint>,
+    ) -> Option<FigChange> {
+        if datapoints.contains_key(&period) && datapoints.contains_key(&period.prev()) {
+            Some(FigChange {
+                old: datapoints.get(&period).unwrap().fig(),
+                new: datapoints.get(&period.prev()).unwrap().fig(),
+                metric,
+                when: period.start_date(),
+            })
+        } else {
+            None
+        }
+    }
 }
 
 impl Display for FigChange {
@@ -474,11 +510,11 @@ impl Datapoint {
 
         conn.execute(
             r#"CREATE TABLE IF NOT EXISTS data (
-			metric_name TEXT NOT NULL, 
-			naive_date TEXT NOT NULL, 
-			val REAL, 
-			PRIMARY KEY (metric_name, naive_date), 
-			FOREIGN KEY(metric_name) REFERENCES metric(name))"#,
+            metric_name TEXT NOT NULL, 
+            naive_date TEXT NOT NULL, 
+            val REAL, 
+            PRIMARY KEY (metric_name, naive_date), 
+            FOREIGN KEY(metric_name) REFERENCES metric(name))"#,
             [],
         )?;
 
@@ -490,22 +526,26 @@ impl Datapoint {
         Ok(())
     }
 
-    pub fn read(metric: Metric) -> rusqlite::Result<Vec<Datapoint>> {
+    pub fn read(metric: Metric) -> rusqlite::Result<HashMap<TimePeriod, Datapoint>> {
         let conn = Connection::open(DATABASE_FILE)?;
 
         let mut stmt = conn.prepare("SELECT naive_date, val FROM data WHERE metric_name = ?1")?;
 
-        let points: Result<Vec<_>, _> = stmt
-            .query_map(params![metric.name], |row| {
-                Ok(Datapoint {
-                    value: row.get(1)?,
-                    metric: metric.clone(),
-                    when: row.get(0)?,
-                })
-            })?
-            .collect();
+        let point_iter = stmt.query_map(params![metric.name], |row| {
+            Ok(Datapoint {
+                value: row.get(1)?,
+                metric: metric.clone(),
+                when: row.get(0)?,
+            })
+        })?;
 
-        points
+        let mut found: HashMap<TimePeriod, Datapoint> = HashMap::new();
+        for point in point_iter {
+            if let Ok(f) = point {
+                found.insert(TimePeriod::new(f.when(), &f.metric_info().frequency), f);
+            }
+        }
+        Ok(found)
     }
 }
 
