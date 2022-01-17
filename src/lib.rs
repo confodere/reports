@@ -141,6 +141,10 @@ impl TimePeriod {
         }
     }
 
+    pub fn end_date(self) -> NaiveDate {
+        self.next_or_prev(1).start_date() - Duration::days(1)
+    }
+
     fn next_or_prev(&self, change: i32) -> TimePeriod {
         match self {
             TimePeriod::Year(year) => TimePeriod::Year(year + change),
@@ -274,11 +278,11 @@ impl Display for TimePeriod {
                     )
                 },
                 {
-                    let date = NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Fri);
+                    let date = NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Sun);
                     format!(
                         "{}{} {}",
                         date.format("%-d"),
-                        ordinal_date(&date.month()),
+                        ordinal_date(&date.day()),
                         date.format("%B")
                     )
                 },
