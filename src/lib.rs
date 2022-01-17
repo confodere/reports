@@ -223,6 +223,84 @@ impl TimePeriod {
     }
 }
 
+/// Provides a display format for each variant of TimePeriod
+///
+/// # Examples
+///
+/// ```
+/// use chrono::NaiveDate;
+/// use reports::{TimeFrequency, TimePeriod};
+/// let date = NaiveDate::from_ymd(2022, 1, 17);
+/// let day = TimePeriod::new(&date, &TimeFrequency::Daily);
+/// let week = TimePeriod::new(&date, &TimeFrequency::Weekly);
+/// let month = TimePeriod::new(&date, &TimeFrequency::Monthly);
+/// let quarter = TimePeriod::new(&date, &TimeFrequency::Quarterly);
+/// let year = TimePeriod::new(&date, &TimeFrequency::Yearly);
+///
+/// assert_eq!(day.to_string(), "17/01/2022");
+/// assert_eq!(week.to_string(), "2022 (17th January to 21st January)");
+/// assert_eq!(month.to_string(), "January 2022");
+/// assert_eq!(quarter.to_string(), "Q1 2022");
+/// assert_eq!(year.to_string(), "2022");
+/// ```
+impl Display for TimePeriod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TimePeriod::Year(year) => write!(f, "{}", year),
+            TimePeriod::Quarter(year, quarter) => write!(f, "Q{} {}", quarter, year),
+            TimePeriod::Month(year, month) => write!(
+                f,
+                "{} {}",
+                {
+                    if let Some(m) = chrono::Month::from_u32(*month) {
+                        m.name()
+                    } else {
+                        panic!("Doesn't fit!!!")
+                    }
+                },
+                year
+            ),
+            TimePeriod::Week(week) => write!(
+                f,
+                "{} ({} to {})",
+                week.year(),
+                {
+                    let date = NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon);
+                    format!(
+                        "{}{} {}",
+                        date.format("%-d"),
+                        ordinal_date(&date.day()),
+                        date.format("%B")
+                    )
+                },
+                {
+                    let date = NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Fri);
+                    format!(
+                        "{}{} {}",
+                        date.format("%-d"),
+                        ordinal_date(&date.month()),
+                        date.format("%B")
+                    )
+                },
+            ),
+            TimePeriod::Day(date) => write!(f, "{}", date.format("%d/%m/%Y")),
+        }
+    }
+}
+
+fn ordinal_date(n: &u32) -> &str {
+    let s = n.to_string();
+    if s.ends_with("1") && !s.ends_with("11") {
+        "st"
+    } else if s.ends_with("2") && !s.ends_with("12") {
+        "nd"
+    } else if s.ends_with("3") && !s.ends_with("13") {
+        "rd "
+    } else {
+        "th"
+    }
+}
+
 pub trait Figure {
     /// Inserts data into description by replacing the characters {} in the description
     /// Panics if {} not present in description

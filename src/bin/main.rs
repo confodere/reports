@@ -55,9 +55,12 @@ fn main() {
         users_points[1].fig(),
     );
 
-    println!("{:#?}", website_users_change.period());
-    println!("{:#?}", website_users_change.period().succ());
-    println!("{:#?}", website_users_change.period().prev());
+    println!("{}", website_users_change.period());
+    println!("{}", website_users_change.period().succ());
+    println!("{}", website_users_change.period().prev());
+
+    let time_period = TimePeriod::new(&Utc::today().naive_utc(), &TimeFrequency::Monthly);
+    println!("{}", time_period.prev());
 
     println!(
         "{} - we are now averaging {}.",
