@@ -46,11 +46,10 @@ fn main() {
             }
         });
 
-    let users_points = Datapoint::read(users_m).expect("Couldn't read users datapoint");
+    let users_points = Datapoint::read(&users_m).expect("Couldn't read users datapoint");
 
     let search_period = TimePeriod::new(&NaiveDate::from_ymd(2022, 2, 4), &TimeFrequency::Weekly);
-    let website_users_change =
-        FigChange::from_period(users_change_m, &search_period, &users_points).unwrap();
+    let website_users_change = FigChange::from_period(users_change_m, &search_period).unwrap();
 
     println!(
         "{} - we are now averaging {}.",

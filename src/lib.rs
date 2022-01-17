@@ -361,6 +361,7 @@ pub struct Metric {
     description: Option<String>,
     print_text: String,
     frequency: TimeFrequency,
+    child: Option<Box<Metric>>,
 }
 
 impl Metric {
@@ -369,12 +370,14 @@ impl Metric {
         description: Option<String>,
         print_text: String,
         frequency: TimeFrequency,
+        child: Option<Box<Metric>>,
     ) -> Metric {
         Metric {
             name,
             description,
             print_text,
             frequency,
+            child,
         }
     }
 
@@ -383,15 +386,35 @@ impl Metric {
         let conn = Connection::open(DATABASE_FILE)?;
 
         let mut stmt =
-            conn.prepare("SELECT name, description, print_text, frequency FROM metric")?;
+            //conn.prepare("SELECT name, description, print_text, frequency FROM metric")?;
+            conn.prepare(r#"SELECT 
+            parent.name, parent.description, parent.print_text, parent.frequency, 
+            child.name, child.description, child.print_text, child.frequency 
+            FROM metric AS parent 
+            LEFT JOIN metric AS child 
+            ON parent.child_name = child.name"#)?;
 
         let metric_iter = stmt.query_map([], |row| {
+            let child = if let Some(_) = row.get::<_, Option<String>>(4)? {
+                Some(Box::new(Metric::new(
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    TimeFrequency::from_str(row.get(3)?)
+                        .expect("Couldn't match TimeFrequency read from database"),
+                    None,
+                )))
+            } else {
+                None
+            };
+
             Ok(Metric::new(
                 row.get(0)?,
                 row.get(1)?,
                 row.get(2)?,
                 TimeFrequency::from_str(row.get(3)?)
                     .expect("Couldn't match TimeFrequency read from database"),
+                child,
             ))
         })?;
 
@@ -413,7 +436,8 @@ impl Metric {
             name TEXT PRIMARY KEY, 
             description TEXT, 
             print_text TEXT, 
-            frequency TEXT)"#,
+            frequency TEXT,
+            child_name TEXT)"#,
             [],
         )?;
 
@@ -458,11 +482,14 @@ impl FigChange {
         }
     }
 
-    pub fn from_period(
-        metric: Metric,
-        period: &TimePeriod,
-        datapoints: &HashMap<TimePeriod, Datapoint>,
-    ) -> Option<FigChange> {
+    pub fn from_period(metric: Metric, period: &TimePeriod) -> Option<FigChange> {
+        let datapoints = Datapoint::read({
+            match &metric.child {
+                Some(child) => child,
+                None => return None,
+            }
+        })
+        .expect("Couldn't read underlying datapoint");
         if datapoints.contains_key(&period) && datapoints.contains_key(&period.prev()) {
             Some(FigChange {
                 old: datapoints.get(&period).unwrap().fig(),
@@ -526,7 +553,7 @@ impl Datapoint {
         Ok(())
     }
 
-    pub fn read(metric: Metric) -> rusqlite::Result<HashMap<TimePeriod, Datapoint>> {
+    pub fn read(metric: &Metric) -> rusqlite::Result<HashMap<TimePeriod, Datapoint>> {
         let conn = Connection::open(DATABASE_FILE)?;
 
         let mut stmt = conn.prepare("SELECT naive_date, val FROM data WHERE metric_name = ?1")?;
