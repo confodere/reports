@@ -1,534 +1,180 @@
 use core::fmt;
-use num_traits::FromPrimitive;
-use std::{collections::HashMap, fmt::Display, hash::Hash};
+use std::{collections::HashMap, fmt::Display, vec};
 
-use chrono::{Datelike, Duration, IsoWeek, NaiveDate, Weekday};
-use itertools::Itertools;
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-use rusqlite::{params, Connection, ToSql};
+use rusqlite::{params, Connection};
+
+mod time_span;
+pub use crate::time_span::{TimeFrequency, TimePeriod, TimeSpan};
 
 const DATABASE_FILE: &str = "ignore/data.db";
 
-#[derive(Debug, Clone)]
-pub struct TimeFrequencyMismatch {
-    pub message: String,
-}
-
-impl fmt::Display for TimeFrequencyMismatch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TimeFrequency is not cross compatible: {}", self.message)
-    }
-}
-
-impl std::error::Error for TimeFrequencyMismatch {}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum TimeFrequency {
-    Yearly = 1,
-    Quarterly = 4,
-    Monthly = 12,
-    Weekly = 2,
-    Daily = 14,
-}
-
-impl TimeFrequency {
-    fn from_str(variant: String) -> Result<TimeFrequency, &'static str> {
-        Ok(match variant.as_str() {
-            "Yearly" => TimeFrequency::Yearly,
-            "Quarterly" => TimeFrequency::Quarterly,
-            "Monthly" => TimeFrequency::Monthly,
-            "Weekly" => TimeFrequency::Weekly,
-            "Daily" => TimeFrequency::Daily,
-            _ => return Err("Read TimeFrequency not found"),
-        })
-    }
-
-    /// Returns how many numerator are in denominator,
-    /// but only if TimeFrequencies can be divided evenly.
-    ///
-    /// Assumes that Monthly, Quarterly, and Yearly can be freely converted.
-    /// As well as Daily and Weekly.
-    /// But that these two groups are incompatible.
-    ///
-    /// ## Panics
-    /// Panics if attempting to cross convert (Months, Quarters, Years) and (Days, Weeks)
-    pub fn divide(
-        numerator: &TimeFrequency,
-        denominator: &TimeFrequency,
-    ) -> Result<f64, TimeFrequencyMismatch> {
-        // Assumes small and large are mutually exclusive
-        // Enum discriminants are used compare variants
-        let (small, large) = ([2, 14], [1, 4, 12]);
-        let (numerator, denominator) = (numerator.clone() as i32, denominator.clone() as i32);
-        if (large.contains(&numerator) && large.contains(&denominator))
-            | (small.contains(&numerator) && small.contains(&denominator))
-        {
-            Ok(numerator as f64 / denominator as f64)
-        } else {
-            Err(TimeFrequencyMismatch {
-                message: denominator.to_string(),
-            })
-        }
-    }
-}
-
-impl ToSql for TimeFrequency {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(format!("{:#?}", self).into())
-    }
-}
-
-type Year = i32;
-type Quarter = u8;
-type Month = u32;
-
-/// TimePeriod allows a NaiveDate to be expressed with the specificity implicit in each TimeFrequency variant,
-/// i.e. all dates in a month have the same TimePeriod::Month value
-///
-/// # Examples
-///
-/// ```
-/// use chrono::NaiveDate;
-/// use reports::{TimeFrequency, TimePeriod};
-///
-/// let date = NaiveDate::from_ymd(2022, 6, 6);
-/// let freq = TimeFrequency::Quarterly;
-/// let time_period = TimePeriod::new(&date, &freq);
-///
-/// if let TimePeriod::Quarter(year, quarter) = time_period {
-/// 	assert_eq!(year, 2022);
-/// 	assert_eq!(quarter, 2);
-/// }
-///
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TimePeriod {
-    Year(Year),
-    // Quarter is expressed as (Jan, Feb, Mar) = 1, (Apr, May, Jun) = 2, (Jul, Aug, Sep) = 3, (Oct, Nov, Dec) = 4
-    Quarter(Year, Quarter),
-    Month(Year, Month),
-    Week(IsoWeek),
-    Day(NaiveDate),
-}
-
-impl TimePeriod {
-    pub fn new(date: &NaiveDate, frequency: &TimeFrequency) -> TimePeriod {
-        match frequency {
-            TimeFrequency::Yearly => TimePeriod::Year(date.year()),
-            TimeFrequency::Quarterly => {
-                TimePeriod::Quarter(date.year(), ((date.month0() / 3) + 1) as u8)
-            }
-            TimeFrequency::Monthly => TimePeriod::Month(date.year(), date.month()),
-            TimeFrequency::Weekly => TimePeriod::Week(date.iso_week()),
-            TimeFrequency::Daily => TimePeriod::Day(date.clone()),
-        }
-    }
-
-    pub fn start_date(&self) -> NaiveDate {
-        match self {
-            TimePeriod::Year(year) => NaiveDate::from_ymd(*year, 1, 1),
-            TimePeriod::Quarter(year, quarter) => {
-                NaiveDate::from_ymd(*year, (quarter * 3 - 1) as u32, 1)
-            }
-            TimePeriod::Month(year, month) => NaiveDate::from_ymd(*year, *month, 1),
-            TimePeriod::Week(week) => {
-                NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon)
-            }
-            TimePeriod::Day(date) => *date,
-        }
-    }
-
-    pub fn end_date(&self) -> NaiveDate {
-        self.next_or_prev(1).start_date() - Duration::days(1)
-    }
-
-    fn next_or_prev(&self, change: i32) -> TimePeriod {
-        match self {
-            TimePeriod::Year(year) => TimePeriod::Year(year + change),
-            TimePeriod::Quarter(year, quarter) => {
-                let new_quarter = (*quarter as i32) + change;
-                if new_quarter <= 4 && new_quarter > 0 {
-                    TimePeriod::Quarter(
-                        *year,
-                        ((*quarter as i32) + change)
-                            .try_into()
-                            .expect("Couldn't create Quarter with such a value"),
-                    )
-                } else {
-                    TimePeriod::Quarter(
-                        year + (change / 12) + if change > 0 { 1 } else { -1 },
-                        (change % 12 + if change < 0 { 13 } else { 0 })
-                            .try_into()
-                            .unwrap(),
-                    )
-                }
-            }
-            TimePeriod::Month(year, month) => {
-                let new_month = (*month as i32) + change;
-                if new_month <= 12 && new_month > 0 {
-                    TimePeriod::Month(
-                        *year,
-                        ((*month as i32) + change)
-                            .try_into()
-                            .expect("Couldn't create Month with such a value"),
-                    )
-                } else {
-                    if change > 0 {
-                        TimePeriod::Month(
-                            *year + (change / 12) + 1,
-                            (change % 12).try_into().unwrap(),
-                        )
-                    } else {
-                        TimePeriod::Month(
-                            *year + (change / 12) - 1,
-                            (change % 12 + 13).try_into().unwrap(),
-                        )
-                    }
-                }
-            }
-            // Wrap around is handled by Chrono Durations for Week and Day
-            // as a year does not contain a constant amount of either
-            TimePeriod::Week(week) => TimePeriod::Week(
-                (NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon)
-                    + Duration::weeks(change.into()))
-                .iso_week(),
-            ),
-            TimePeriod::Day(date) => TimePeriod::Day(*date + Duration::days(change.into())),
-        }
-    }
-
-    /// The next relevant TimePeriod
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use reports::TimePeriod;
-    /// let q4 = TimePeriod::Quarter(2022, 4);
-    /// assert!(matches!(q4.succ(), TimePeriod::Quarter(2023, 1)))
-    /// ```
-    pub fn succ(&self) -> TimePeriod {
-        self.next_or_prev(1)
-    }
-
-    /// The previous relevant TimePeriod
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use reports::TimePeriod;
-    /// let jan = TimePeriod::Month(2022, 1);
-    /// assert!(matches!(jan.prev(), TimePeriod::Month(2021, 12)))
-    /// ```
-    pub fn prev(&self) -> TimePeriod {
-        self.next_or_prev(-1)
-    }
-}
-
-/// Provides a display format for each variant of TimePeriod
-///
-/// # Examples
-///
-/// ```
-/// use chrono::NaiveDate;
-/// use reports::{TimeFrequency, TimePeriod};
-/// let date = NaiveDate::from_ymd(2022, 1, 17);
-/// let day = TimePeriod::new(&date, &TimeFrequency::Daily);
-/// let week = TimePeriod::new(&date, &TimeFrequency::Weekly);
-/// let month = TimePeriod::new(&date, &TimeFrequency::Monthly);
-/// let quarter = TimePeriod::new(&date, &TimeFrequency::Quarterly);
-/// let year = TimePeriod::new(&date, &TimeFrequency::Yearly);
-///
-/// assert_eq!(day.to_string(), "17/01/2022");
-/// assert_eq!(week.to_string(), "2022 (17th January to 21st January)");
-/// assert_eq!(month.to_string(), "January 2022");
-/// assert_eq!(quarter.to_string(), "Q1 2022");
-/// assert_eq!(year.to_string(), "2022");
-/// ```
-impl Display for TimePeriod {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TimePeriod::Year(year) => write!(f, "{}", year),
-            TimePeriod::Quarter(year, quarter) => write!(f, "Q{} {}", quarter, year),
-            TimePeriod::Month(year, month) => write!(
-                f,
-                "{} {}",
-                {
-                    if let Some(m) = chrono::Month::from_u32(*month) {
-                        m.name()
-                    } else {
-                        panic!("Doesn't fit!!!")
-                    }
-                },
-                year
-            ),
-            TimePeriod::Week(week) => write!(
-                f,
-                "{} ({} to {})",
-                week.year(),
-                {
-                    let date = NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon);
-                    format!(
-                        "{}{} {}",
-                        date.format("%-d"),
-                        ordinal_date(&date.day()),
-                        date.format("%B")
-                    )
-                },
-                {
-                    let date = NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Sun);
-                    format!(
-                        "{}{} {}",
-                        date.format("%-d"),
-                        ordinal_date(&date.day()),
-                        date.format("%B")
-                    )
-                },
-            ),
-            TimePeriod::Day(date) => write!(f, "{}", date.format("%d/%m/%Y")),
-        }
-    }
-}
-
-impl Hash for TimePeriod {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            TimePeriod::Year(year) => year.hash(state),
-            TimePeriod::Quarter(year, quarter) => {
-                year.hash(state);
-                quarter.hash(state)
-            }
-            TimePeriod::Month(year, month) => {
-                year.hash(state);
-                month.hash(state)
-            }
-            TimePeriod::Week(week) => {
-                week.year().hash(state);
-                week.week().hash(state)
-            }
-            TimePeriod::Day(date) => date.hash(state),
-        }
-    }
-}
-
-fn ordinal_date(n: &u32) -> &str {
-    let s = n.to_string();
-    if s.ends_with("1") && !s.ends_with("11") {
-        "st"
-    } else if s.ends_with("2") && !s.ends_with("12") {
-        "nd"
-    } else if s.ends_with("3") && !s.ends_with("13") {
-        "rd "
-    } else {
-        "th"
-    }
-}
-
-pub trait Figure {
-    /// Inserts data into description by replacing the characters {} in the description
-    /// Panics if {} not present in description
-    fn format(&self, description: &String, data: String) -> String {
-        let insert_position = description
-            .find("{}")
-            .expect("Couldn't find place to insert data");
-        format!(
-            "{} {}{}",
-            &description[0..(insert_position - 1)],
-            data,
-            &description[(insert_position + 2)..]
-        )
-    }
-
-    fn averaged(&self, frequency: &TimeFrequency) -> f64 {
-        self.fig()
-            / TimeFrequency::divide(frequency, &self.metric_info().frequency)
-                .expect("Cannot average accurately")
-    }
-
-    fn period(&self) -> TimePeriod {
-        TimePeriod::new(self.when(), &self.metric_info().frequency)
-    }
-
-    fn metric_info(&self) -> &Metric;
-    fn when(&self) -> &NaiveDate;
-
-    fn fig(&self) -> f64;
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct Metric {
-    name: String,
-    description: Option<String>,
-    print_text: String,
-    frequency: TimeFrequency,
-    child: Option<Box<Metric>>,
+    pub long_text: String,
+    pub frequency: TimeFrequency,
+    pub calculation_type: String,
 }
 
 impl Metric {
-    pub fn new(
-        name: String,
-        description: Option<String>,
-        print_text: String,
-        frequency: TimeFrequency,
-        child: Option<Box<Metric>>,
-    ) -> Metric {
+    pub fn new(long_text: String, frequency: TimeFrequency, calculation_type: String) -> Metric {
         Metric {
-            name,
-            description,
-            print_text,
+            long_text,
             frequency,
-            child,
+            calculation_type,
         }
-    }
-
-    /// Reads all Metrics saved in sqlite3
-    pub fn read() -> rusqlite::Result<HashMap<String, Metric>> {
-        let conn = Connection::open(DATABASE_FILE)?;
-
-        let mut stmt =
-            //conn.prepare("SELECT name, description, print_text, frequency FROM metric")?;
-            conn.prepare(r#"SELECT 
-            parent.name, parent.description, parent.print_text, parent.frequency, 
-            child.name, child.description, child.print_text, child.frequency 
-            FROM metric AS parent 
-            LEFT JOIN metric AS child 
-            ON parent.child_name = child.name"#)?;
-
-        let metric_iter = stmt.query_map([], |row| {
-            let child = if let Some(_) = row.get::<_, Option<String>>(4)? {
-                Some(Box::new(Metric::new(
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    TimeFrequency::from_str(row.get(3)?)
-                        .expect("Couldn't match TimeFrequency read from database"),
-                    None,
-                )))
-            } else {
-                None
-            };
-
-            Ok(Metric::new(
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                TimeFrequency::from_str(row.get(3)?)
-                    .expect("Couldn't match TimeFrequency read from database"),
-                child,
-            ))
-        })?;
-
-        let mut found: HashMap<String, Metric> = HashMap::new();
-        for metric in metric_iter {
-            if let Ok(f) = metric {
-                found.insert(f.name.clone(), f);
-            }
-        }
-        Ok(found)
     }
 
     /// Inserts current metric into sqlite3 database
-    pub fn write(&self) -> rusqlite::Result<()> {
+    pub fn write(&self, name: String) -> rusqlite::Result<()> {
         let conn = Connection::open(DATABASE_FILE)?;
 
         conn.execute(
-            r#"CREATE TABLE IF NOT EXISTS metric (
-            name TEXT PRIMARY KEY, 
-            description TEXT, 
-            print_text TEXT, 
-            frequency TEXT,
-            child_name TEXT)"#,
+            r#"CREATE TABLE IF NOT EXISTS Metric (
+            data_name TEXT NOT NULL,
+            long_text TEXT NOT NULL,
+            calculation_type TEXT NOT NULL,
+            frequency TEXT NOT NULL,
+            PRIMARY KEY (data_name, calculation_type, frequency),
+            FOREIGN KEY (data_name) REFERENCES Data(name)
+            )"#,
             [],
         )?;
 
         conn.execute(
-            "INSERT INTO metric (name, description, print_text, frequency) VALUES (?1, ?2, ?3, ?4)",
-            params![self.name, self.description, self.print_text, self.frequency],
+            "INSERT INTO Metric (data_name, long_text, calculation_type, frequency) VALUES (?1, ?2, ?3, ?4)",
+            params![name, self.frequency],
         )?;
 
         Ok(())
     }
+
+    pub fn freq(&self) -> &TimeFrequency {
+        &self.frequency
+    }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct FigChange {
+pub trait Figure: Serialize {
+    fn fig(&self) -> f64;
+    fn render(&self, ctx: RenderContext) -> ComputedStringMetric;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Change {
     old: f64,
     new: f64,
-    metric: Metric,
-    when: NaiveDate,
+    span: TimeSpan,
+    frequency: TimeFrequency,
 }
 
-impl Figure for FigChange {
+impl Figure for Change {
     fn fig(&self) -> f64 {
         (self.new - self.old) / self.old
     }
 
-    fn metric_info(&self) -> &Metric {
-        &self.metric
-    }
-
-    fn when(&self) -> &NaiveDate {
-        &self.when
+    fn render(&self, ctx: RenderContext) -> ComputedStringMetric {
+        ComputedStringMetric {
+            fig: match ctx {
+                RenderContext::Words => DisplayType::DescribedPercentage(self).to_string(),
+                RenderContext::Numbers => DisplayType::Percentage(self).to_string(),
+            },
+            time_periods: vec![
+                (self.span.clone() - self.frequency.clone()).to_string(),
+                self.span.clone().to_string(),
+            ],
+        }
     }
 }
 
-impl FigChange {
-    pub fn new(metric: Metric, when: NaiveDate, old: f64, new: f64) -> FigChange {
-        FigChange {
-            old,
-            new,
-            metric,
-            when,
-        }
-    }
+impl<'a> Change {
+    pub fn from(data: &Data, span: TimeSpan, frequency: TimeFrequency) -> Result<Change, String> {
+        let datapoints = data
+            .read_points((span.clone() - frequency.clone()).start(), span.end())
+            .expect("Couldn't read underlying datapoint");
 
-    pub fn from_period(metric: Metric, period: &TimePeriod) -> Option<FigChange> {
-        let datapoints = Datapoint::read({
-            match &metric.child {
-                Some(child) => child,
-                None => return None,
+        let [new, old] = [&span, &(span.clone() - frequency.clone())].map(|p| {
+            if let Some(point) = datapoints.get(p) {
+                Ok(point.fig())
+            } else {
+                return Err(format!("Couldn't find datapoint: {:#?}", p));
             }
+        });
+
+        Ok(Change {
+            old: old.unwrap(),
+            new: new.unwrap(),
+            span: span.clone(),
+            frequency: frequency.clone(),
         })
-        .expect("Couldn't read underlying datapoint");
-        if datapoints.contains_key(&period) && datapoints.contains_key(&period.prev()) {
-            Some(FigChange {
-                old: datapoints.get(&period).unwrap().fig(),
-                new: datapoints.get(&period.prev()).unwrap().fig(),
-                metric,
-                when: period.start_date(),
-            })
-        } else {
-            None
+    }
+}
+
+impl Display for Change {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", DisplayType::DescribedPercentage(self))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ComputedStringMetric {
+    pub fig: String,
+    pub time_periods: Vec<String>,
+}
+
+pub enum RenderContext {
+    Words,
+    Numbers,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Fig {
+    pub fig: f64,
+}
+
+impl Figure for Fig {
+    fn fig(&self) -> f64 {
+        self.fig
+    }
+
+    fn render(&self, _ctx: RenderContext) -> ComputedStringMetric {
+        ComputedStringMetric {
+            fig: self.fig().to_string(),
+            time_periods: vec![],
         }
     }
 }
 
-impl Display for FigChange {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            self.format(
-                &self.metric.print_text,
-                DisplayType::DescribedPercentage(self).to_string()
-            )
-        )
-    }
+pub enum Figures {
+    Change(Change),
+    Fig(Fig),
+    Datapoint(Point),
 }
 
-#[derive(Clone)]
-pub struct Datapoint {
-    value: f64,
-    metric: Metric,
-    when: NaiveDate,
+#[derive(Debug, PartialEq, Eq)]
+pub struct Data {
+    name: String,
+    long_name: String,
+    description: Option<String>,
+    pub frequency: TimeFrequency,
+    pub metrics: Vec<Metric>,
 }
 
-impl Datapoint {
-    pub fn new(value: f64, metric: Metric, when: NaiveDate) -> Datapoint {
-        Datapoint {
-            value,
-            metric,
-            when,
+impl Data {
+    pub fn new(
+        name: String,
+        long_name: String,
+        description: Option<String>,
+        frequency: TimeFrequency,
+        metrics: Vec<Metric>,
+    ) -> Data {
+        Data {
+            name,
+            long_name,
+            description,
+            frequency,
+            metrics,
         }
     }
 
@@ -536,71 +182,166 @@ impl Datapoint {
         let conn = Connection::open(DATABASE_FILE)?;
 
         conn.execute(
-            r#"CREATE TABLE IF NOT EXISTS data (
-            metric_name TEXT NOT NULL, 
-            naive_date TEXT NOT NULL, 
-            val REAL, 
-            PRIMARY KEY (metric_name, naive_date), 
-            FOREIGN KEY(metric_name) REFERENCES metric(name))"#,
+            r#"
+        CREATE TABLE IF NOT EXISTS Data (
+            name TEXT NOT NULL,
+            long_name TEXT NOT NULL,
+            description TEXT,
+            frequency TEXT NOT NULL,
+            PRIMARY KEY (name)
+        )"#,
             [],
         )?;
 
         conn.execute(
-            "INSERT INTO data (metric_name, naive_date, val) VALUES (?1, ?2, ?3)",
-            params![self.metric.name, self.when, self.value],
+            "INSERT INTO Data (name, long_name, description, frequency) VALUES (?1, ?2, ?3, ?4)",
+            params![self.name, self.long_name, self.description, self.frequency],
         )?;
 
         Ok(())
     }
 
-    pub fn read(metric: &Metric) -> rusqlite::Result<HashMap<TimePeriod, Datapoint>> {
+    pub fn read(name: String) -> rusqlite::Result<Data> {
         let conn = Connection::open(DATABASE_FILE)?;
 
-        let mut stmt = conn.prepare("SELECT naive_date, val FROM data WHERE metric_name = ?1")?;
+        let mut data_stmt = conn.prepare(
+            r#"
+            SELECT name, long_name, description, frequency
+            FROM Data
+            WHERE name = ?1
+        "#,
+        )?;
 
-        let point_iter = stmt.query_map(params![metric.name], |row| {
-            Ok(Datapoint {
-                value: row.get(1)?,
-                metric: metric.clone(),
-                when: row.get(0)?,
+        let mut data = data_stmt.query_row(params![name], |row| {
+            Ok(Data {
+                name: row.get(0)?,
+                long_name: row.get(1)?,
+                description: row.get(2)?,
+                frequency: TimeFrequency::from_str(row.get(3)?)
+                    .expect("Couldn't match TimeFrequency read from database"),
+                metrics: vec![],
             })
         })?;
 
-        let mut found: HashMap<TimePeriod, Datapoint> = HashMap::new();
+        let mut metric_stmt = conn.prepare(
+            r#"
+            SELECT long_text, frequency, calculation_type 
+            FROM Metric 
+            WHERE data_name = ?1
+            "#,
+        )?;
+
+        let metrics =
+            metric_stmt.query_and_then(params![name], |row| -> Result<_, rusqlite::Error> {
+                Ok(Metric::new(
+                    row.get(0)?,
+                    TimeFrequency::from_str(row.get(1)?)
+                        .expect("Couldn't match TimeFrequency read from database"),
+                    row.get(2)?,
+                ))
+            })?;
+
+        for metric in metrics {
+            data.metrics.push(metric?);
+        }
+        Ok(data)
+    }
+
+    pub fn read_points(
+        &self,
+        start_date: &NaiveDate,
+        end_date: NaiveDate,
+    ) -> rusqlite::Result<HashMap<TimeSpan, Point>> {
+        let conn = Connection::open(DATABASE_FILE)?;
+
+        let mut stmt = conn.prepare(
+            r#"
+        SELECT naive_date, val
+        FROM Point
+        WHERE data_name = ?1 AND naive_date BETWEEN ?2 AND ?3
+        "#,
+        )?;
+
+        let point_iter = stmt.query_map(params![self.name, start_date, end_date], |row| {
+            Ok(Point::new(row.get(1)?, row.get(0)?))
+        })?;
+
+        let mut found: HashMap<TimeSpan, Point> = HashMap::new();
         for point in point_iter {
-            if let Ok(f) = point {
-                found.insert(TimePeriod::new(f.when(), &f.metric_info().frequency), f);
+            if let Ok(point) = point {
+                found.insert(TimeSpan::new(point.when(), self.frequency.clone()), point);
+            } else {
+                panic!("{:#?}", point);
             }
         }
         Ok(found)
     }
 }
 
-impl Figure for Datapoint {
-    fn metric_info(&self) -> &Metric {
-        &self.metric
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Point {
+    value: f64,
+    when: NaiveDate,
+}
+
+impl Point {
+    pub fn new(value: f64, when: NaiveDate) -> Point {
+        Point { value, when }
     }
 
-    fn when(&self) -> &NaiveDate {
-        &self.when
-    }
+    pub fn write(&self, data: &Data) -> rusqlite::Result<()> {
+        let conn = Connection::open(DATABASE_FILE)?;
 
-    fn fig(&self) -> f64 {
-        self.value
+        conn.execute(
+            r#"CREATE TABLE IF NOT EXISTS Point (
+            data_name TEXT NOT NULL, 
+            naive_date TEXT NOT NULL, 
+            val REAL, 
+            PRIMARY KEY (data_name, naive_date), 
+            FOREIGN KEY(data_name) REFERENCES Data(name))"#,
+            [],
+        )?;
+
+        conn.execute(
+            "INSERT INTO Point (data_name, naive_date, val) VALUES (?1, ?2, ?3)",
+            params![data.name, self.when, self.value],
+        )?;
+
+        Ok(())
     }
 }
 
-impl Display for Datapoint {
+impl Figure for Point {
+    fn fig(&self) -> f64 {
+        self.value
+    }
+
+    fn render(&self, _ctx: RenderContext) -> ComputedStringMetric {
+        ComputedStringMetric {
+            fig: self.value.to_string(),
+            time_periods: vec![self.when.to_string()],
+        }
+    }
+}
+
+impl Point {
+    fn when(&self) -> &NaiveDate {
+        &self.when
+    }
+}
+
+impl Display for Point {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         DisplayType::Rounded(self).fmt(f)
     }
 }
 
+#[derive(Serialize)]
 pub enum DisplayType<'a, T: Figure> {
     Rounded(&'a T),
     Percentage(&'a T),
     DescribedPercentage(&'a T),
-    PerFrequency(&'a T, &'a TimeFrequency),
+    PerFrequency(&'a T, &'a TimeFrequency, &'a TimeFrequency),
 }
 
 impl<'a, T: Figure> Display for DisplayType<'a, T> {
@@ -612,11 +353,15 @@ impl<'a, T: Figure> Display for DisplayType<'a, T> {
                 let description = if fig.fig() > 0.0 { "up" } else { "down" };
                 write!(f, "{} {:.1}%", description, (100.0 * fig.fig().abs()))
             }
-            DisplayType::PerFrequency(fig, freq) => write!(
+            DisplayType::PerFrequency(fig, old_freq, new_freq) => write!(
                 f,
                 "{:.1} per {}",
-                fig.averaged(freq),
-                match freq {
+                {
+                    fig.fig()
+                        / TimeFrequency::divide(new_freq, old_freq)
+                            .expect("Cannot convert Frequency of Data accurately")
+                },
+                match new_freq {
                     TimeFrequency::Yearly => "year",
                     TimeFrequency::Quarterly => "quarter",
                     TimeFrequency::Monthly => "month",
@@ -640,59 +385,98 @@ impl Display for FormatType {
     }
 }
 
-pub trait Component {}
-
-impl Component for String {}
-impl Component for FigChange {}
-
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Statement<C: Component> {
-    pub contents: Vec<C>,
+pub struct Statement {
+    pub fig: f64,
 }
 
-impl<C: Component + Display> fmt::Display for Statement<C> {
+impl Statement {
+    fn _from_fig<T: Figure>(f: T) -> Statement {
+        Statement { fig: f.fig() }
+    }
+}
+
+impl fmt::Display for Statement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            self.contents.iter().map(|v| v.to_string()).format(" ")
-        )
+        write!(f, "{}", self.fig)
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Paragraph<C: Component> {
-    pub contents: Vec<Statement<C>>,
+pub struct Paragraph<T: Figure> {
+    pub contents: Vec<Statement>,
     pub name: String,
+    pub fig: T,
 }
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
+    fn setup() -> (Data, NaiveDate, TimeSpan) {
+        let metric = Metric::new(
+            String::from("users"),
+            TimeFrequency::Yearly,
+            String::from("Change"),
+        );
+        let date = NaiveDate::from_ymd(2022, 2, 4);
+        let span = TimeSpan::new(&date, TimeFrequency::Weekly);
+        let data = Data::new(
+            String::from("website_visits"),
+            String::from("Visits to the website"),
+            None,
+            TimeFrequency::Weekly,
+            vec![metric],
+        );
+        (data, date, span)
+    }
+
     #[test]
-    fn make_paragraph() {
-        let description = String::from("Website users were");
-        let comment = String::from("down");
-        let figure = String::from("5%");
+    fn create_context() {
+        let (data, _, span) = setup();
 
-        let statement = Statement {
-            contents: vec![description, comment, figure],
-        };
+        let change = Change::from(&data, span.clone(), TimeFrequency::Yearly);
+        if let Ok(change) = change {
+            let data = change.render(RenderContext::Words);
 
-        assert_eq!(
-            statement.to_string(),
-            String::from("Website users were down 5%")
+            assert_eq!(data.fig, "up 64.6%");
+        } else {
+            panic!("Couldn't create change")
+        }
+    }
+
+    #[test]
+    fn read_data() {
+        let name = String::from("website_visits");
+
+        let metric_1 = Metric::new(
+        String::from("Web visits are {{fig}} compared to this same reporting period last year ({{time_periods.0}})"),
+        TimeFrequency::Yearly,
+        String::from("Change"),
         );
 
-        assert_eq!(
-            statement
-                .contents
-                .iter()
-                .map(|id| id.to_string() + " ")
-                .collect::<String>(),
-            String::from("Website users were down 5% ")
+        let metric_2 = Metric::new(
+            String::from("Total website users were {{fig}}"),
+            TimeFrequency::Weekly,
+            String::from("Change"),
         );
+
+        let metric_3 = Metric::new(
+            String::from("we are now averaging {{fig}}"),
+            TimeFrequency::Daily,
+            String::from("AvgFreq"),
+        );
+
+        let data_1 = Data::new(
+            name.clone(),
+            String::from("Visits to the website"),
+            Some(String::from("Total times people checked out the website")),
+            TimeFrequency::Weekly,
+            vec![metric_3, metric_2, metric_1],
+        );
+
+        let data_2 = Data::read(name).unwrap();
+
+        assert_eq!(data_1, data_2);
     }
 }
