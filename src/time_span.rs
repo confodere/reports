@@ -1,10 +1,10 @@
-use chrono::{Datelike, Duration, IsoWeek, NaiveDate, Weekday};
-use chronoutil::delta;
+use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use chronoutil::{delta, RelativeDuration};
 use rusqlite::ToSql;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::Hash;
-use std::ops::{Add, Sub};
+use std::ops::{Add, Div, Sub};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TimeSpan {
@@ -91,18 +91,107 @@ impl Sub<TimeFrequency> for TimeSpan {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct TimeFrequencyMismatch {
-    pub message: String,
-}
+/// Returns how many numerator are in the denominator.  
+/// Year/Quarter/Month are divided exactly.
+/// Week/Day are divided exactly.  
+/// Week or Day / Year or Quarter or Month are divided based on the number of instances in the TimeSpan date
+///
+/// For the unclear cases of Week/Quarter and Week/Month, the following rule is applied ([as described here](<https://en.wikipedia.org/wiki/ISO_week_date#Weeks_per_month>)):
+/// - Quarters have 13 weeks except the final quarter of a year with 53 weeks (which has 14)
+/// - Months have 4 or 5 weeks based on an extrapolation of ISO 8601-1 week system to months instead of years
+///
+/// # Examples
+///
+/// ```
+/// use chrono::NaiveDate;
+/// use reports::{TimeSpan, TimeFrequency};
+/// let date = NaiveDate::from_ymd(2022, 1, 21);
+/// let date_53 = NaiveDate::from_ymd(2020, 1, 21);
+///
+/// assert_eq!(TimeSpan::new(&date, TimeFrequency::Weekly) / TimeFrequency::Yearly, 52.0);
+/// assert_eq!(TimeSpan::new(&date_53, TimeFrequency::Weekly) / TimeFrequency::Yearly, 53.0);
+///
+/// assert_eq!(TimeSpan::new(&date, TimeFrequency::Yearly) / TimeFrequency::Quarterly, 0.25);
+/// assert_eq!(TimeSpan::new(&date, TimeFrequency::Monthly) / TimeFrequency::Quarterly, 3.0);
+/// assert_eq!(TimeSpan::new(&date, TimeFrequency::Weekly) / TimeFrequency::Quarterly, 13.0);
+///
+/// assert_eq!(TimeSpan::new(&date, TimeFrequency::Weekly) / TimeFrequency::Monthly, 4.0);
+///
+/// assert_eq!(TimeSpan::new(&date, TimeFrequency::Daily) / TimeFrequency::Weekly, 7.0);
+/// ```
+impl Div<TimeFrequency> for TimeSpan {
+    type Output = f64;
 
-impl fmt::Display for TimeFrequencyMismatch {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TimeFrequency is not cross compatible: {}", self.message)
+    /// Internally assigns a numeric value to both the denominator & numerator so that the result gives the expected value
+    /// The value of Weeks & Days is adjusted specific to the different circumstances of the other frequency
+    /// i.e. neither divides evenly with 'Years', 'Quarters', or 'Months', so a circumstantial result is given.
+    fn div(self, rhs: TimeFrequency) -> Self::Output {
+        let final_day = NaiveDate::from_ymd(self.start_date.year() + 1, 1, 1).pred();
+        let (week, day) = (final_day.iso_week().week(), final_day.ordinal());
+
+        let [num, denom] =
+            [(&self.frequency, &rhs), (&rhs, &self.frequency)].map(|(freq, other)| match freq {
+                TimeFrequency::Yearly | TimeFrequency::Quarterly | TimeFrequency::Monthly => {
+                    // Assumes values 1 | 4 | 12
+                    freq.clone() as u32
+                }
+                TimeFrequency::Weekly => match other {
+                    TimeFrequency::Yearly => week,
+                    TimeFrequency::Quarterly => match week {
+                        53 if self.start_date.month() > 9 => 56, // 14
+                        _ => 52,                                 // 13
+                    },
+                    TimeFrequency::Monthly => {
+                        let first_of_month = self.start_date.with_day(1).unwrap();
+                        let last_of_month = (first_of_month + RelativeDuration::months(1)).pred();
+                        match first_of_month.weekday() {
+                            Weekday::Thu if last_of_month.day() >= 29 => 60,
+                            Weekday::Wed if last_of_month.day() >= 30 => 60,
+                            Weekday::Tue
+                                if (last_of_month.day() == 31
+                                    && last_of_month.weekday() == Weekday::Thu) =>
+                            {
+                                60
+                            } // 5 weeks in month
+                            _ => 48, // 4 weeks
+                        }
+                    }
+                    _ => week, // daily is adjusted seperately, relying on weeks to be the number of weeks in the year
+                },
+                TimeFrequency::Daily => match other {
+                    TimeFrequency::Yearly => day,
+                    TimeFrequency::Quarterly => {
+                        let quarter = ((self.start_date.month() - 1) / 3) + 1;
+                        match quarter {
+                            1 if day == 365 => 360,
+                            1 | 2 => 364,
+                            3 | 4 => 368,
+                            _ => panic!("Invalid quarter number: {}", quarter),
+                        }
+                    }
+                    TimeFrequency::Monthly => match self.start_date.month() {
+                        1 | 3 | 5 | 7 | 8 | 10 | 12 => 372,
+                        2 => {
+                            if day == 365 {
+                                336
+                            } else {
+                                348
+                            }
+                        }
+                        4 | 6 | 9 | 11 => 360,
+                        _ => panic!("Invalid month number: {}", self.start_date.month()),
+                    },
+                    TimeFrequency::Weekly => match week {
+                        52 => 364,
+                        53 => 371,
+                        _ => panic!("Invalid week number: {}", week),
+                    },
+                    TimeFrequency::Daily => day,
+                },
+            });
+        num as f64 / denom as f64
     }
 }
-
-impl std::error::Error for TimeFrequencyMismatch {}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TimeFrequency {
@@ -124,185 +213,11 @@ impl TimeFrequency {
             _ => return Err("Read TimeFrequency not found"),
         })
     }
-
-    /// Returns how many numerator are in denominator,
-    /// but only if TimeFrequencies can be divided evenly.
-    ///
-    /// Assumes that Monthly, Quarterly, and Yearly can be freely converted.
-    /// As well as Daily and Weekly.
-    /// But that these two groups are incompatible.
-    ///
-    /// ## Panics
-    /// Panics if attempting to cross convert (Months, Quarters, Years) and (Days, Weeks)
-    pub fn divide(
-        numerator: &TimeFrequency,
-        denominator: &TimeFrequency,
-    ) -> Result<f64, TimeFrequencyMismatch> {
-        // Assumes small and large are mutually exclusive
-        // Enum discriminants are used compare variants
-        let (small, large) = ([2, 14], [1, 4, 12]);
-        let (numerator, denominator) = (numerator.clone() as i32, denominator.clone() as i32);
-        if (large.contains(&numerator) && large.contains(&denominator))
-            | (small.contains(&numerator) && small.contains(&denominator))
-        {
-            Ok(numerator as f64 / denominator as f64)
-        } else {
-            Err(TimeFrequencyMismatch {
-                message: denominator.to_string(),
-            })
-        }
-    }
 }
 
 impl ToSql for TimeFrequency {
     fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
         Ok(format!("{:#?}", self).into())
-    }
-}
-
-type Year = i32;
-type Quarter = u8;
-type Month = u32;
-
-/// TimePeriod allows a NaiveDate to be expressed with the specificity implicit in each TimeFrequency variant,
-/// i.e. all dates in a month have the same TimePeriod::Month value
-///
-/// # Examples
-///
-/// ```
-/// use chrono::NaiveDate;
-/// use reports::{TimeFrequency, TimePeriod};
-///
-/// let date = NaiveDate::from_ymd(2022, 6, 6);
-/// let freq = TimeFrequency::Quarterly;
-/// let time_period = TimePeriod::new(&date, &freq);
-///
-/// if let TimePeriod::Quarter(year, quarter) = time_period {
-/// 	assert_eq!(year, 2022);
-/// 	assert_eq!(quarter, 2);
-/// }
-///
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TimePeriod {
-    Year(Year),
-    // Quarter is expressed as (Jan, Feb, Mar) = 1, (Apr, May, Jun) = 2, (Jul, Aug, Sep) = 3, (Oct, Nov, Dec) = 4
-    Quarter(Year, Quarter),
-    Month(Year, Month),
-    Week(IsoWeek),
-    Day(NaiveDate),
-}
-
-impl TimePeriod {
-    pub fn new(date: &NaiveDate, frequency: &TimeFrequency) -> TimePeriod {
-        match frequency {
-            TimeFrequency::Yearly => TimePeriod::Year(date.year()),
-            TimeFrequency::Quarterly => {
-                TimePeriod::Quarter(date.year(), ((date.month0() / 3) + 1) as u8)
-            }
-            TimeFrequency::Monthly => TimePeriod::Month(date.year(), date.month()),
-            TimeFrequency::Weekly => TimePeriod::Week(date.iso_week()),
-            TimeFrequency::Daily => TimePeriod::Day(date.clone()),
-        }
-    }
-
-    pub fn start_date(&self) -> NaiveDate {
-        match self {
-            TimePeriod::Year(year) => NaiveDate::from_ymd(*year, 1, 1),
-            TimePeriod::Quarter(year, quarter) => {
-                NaiveDate::from_ymd(*year, (quarter * 3 - 1) as u32, 1)
-            }
-            TimePeriod::Month(year, month) => NaiveDate::from_ymd(*year, *month, 1),
-            TimePeriod::Week(week) => {
-                NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon)
-            }
-            TimePeriod::Day(date) => *date,
-        }
-    }
-
-    pub fn end_date(&self) -> NaiveDate {
-        self.next_or_prev(1).start_date() - Duration::days(1)
-    }
-
-    fn next_or_prev(&self, change: i32) -> TimePeriod {
-        match self {
-            TimePeriod::Year(year) => TimePeriod::Year(year + change),
-            TimePeriod::Quarter(year, quarter) => {
-                let new_quarter = (*quarter as i32) + change;
-                if new_quarter <= 4 && new_quarter > 0 {
-                    TimePeriod::Quarter(
-                        *year,
-                        ((*quarter as i32) + change)
-                            .try_into()
-                            .expect("Couldn't create Quarter with such a value"),
-                    )
-                } else {
-                    TimePeriod::Quarter(
-                        year + (change / 12) + if change > 0 { 1 } else { -1 },
-                        (change % 12 + if change < 0 { 13 } else { 0 })
-                            .try_into()
-                            .unwrap(),
-                    )
-                }
-            }
-            TimePeriod::Month(year, month) => {
-                let new_month = (*month as i32) + change;
-                if new_month <= 12 && new_month > 0 {
-                    TimePeriod::Month(
-                        *year,
-                        ((*month as i32) + change)
-                            .try_into()
-                            .expect("Couldn't create Month with such a value"),
-                    )
-                } else {
-                    if change > 0 {
-                        TimePeriod::Month(
-                            *year + (change / 12) + 1,
-                            (change % 12).try_into().unwrap(),
-                        )
-                    } else {
-                        TimePeriod::Month(
-                            *year + (change / 12) - 1,
-                            (change % 12 + 13).try_into().unwrap(),
-                        )
-                    }
-                }
-            }
-            // Wrap around is handled by Chrono Durations for Week and Day
-            // as a year does not contain a constant amount of either
-            TimePeriod::Week(week) => TimePeriod::Week(
-                (NaiveDate::from_isoywd(week.year(), week.week(), Weekday::Mon)
-                    + Duration::weeks(change.into()))
-                .iso_week(),
-            ),
-            TimePeriod::Day(date) => TimePeriod::Day(*date + Duration::days(change.into())),
-        }
-    }
-
-    /// The next relevant TimePeriod
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use reports::TimePeriod;
-    /// let q4 = TimePeriod::Quarter(2022, 4);
-    /// assert!(matches!(q4.succ(), TimePeriod::Quarter(2023, 1)))
-    /// ```
-    pub fn succ(&self) -> TimePeriod {
-        self.next_or_prev(1)
-    }
-
-    /// The previous relevant TimePeriod
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use reports::TimePeriod;
-    /// let jan = TimePeriod::Month(2022, 1);
-    /// assert!(matches!(jan.prev(), TimePeriod::Month(2021, 12)))
-    /// ```
-    pub fn prev(&self) -> TimePeriod {
-        self.next_or_prev(-1)
     }
 }
 
@@ -365,27 +280,6 @@ impl fmt::Display for TimeSpan {
                 )
             }
             TimeFrequency::Daily => write!(f, "{}", self.start_date.format("%d/%m/%Y")),
-        }
-    }
-}
-
-impl Hash for TimePeriod {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        match self {
-            TimePeriod::Year(year) => year.hash(state),
-            TimePeriod::Quarter(year, quarter) => {
-                year.hash(state);
-                quarter.hash(state)
-            }
-            TimePeriod::Month(year, month) => {
-                year.hash(state);
-                month.hash(state)
-            }
-            TimePeriod::Week(week) => {
-                week.year().hash(state);
-                week.week().hash(state)
-            }
-            TimePeriod::Day(date) => date.hash(state),
         }
     }
 }

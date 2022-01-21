@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use rusqlite::{params, Connection};
 
 mod time_span;
-pub use crate::time_span::{TimeFrequency, TimePeriod, TimeSpan};
+pub use crate::time_span::{TimeFrequency, TimeSpan};
 
 const DATABASE_FILE: &str = "ignore/data.db";
 
@@ -341,7 +341,7 @@ pub enum DisplayType<'a, T: Figure> {
     Rounded(&'a T),
     Percentage(&'a T),
     DescribedPercentage(&'a T),
-    PerFrequency(&'a T, &'a TimeFrequency, &'a TimeFrequency),
+    PerFrequency(&'a T, TimeSpan, TimeFrequency),
 }
 
 impl<'a, T: Figure> Display for DisplayType<'a, T> {
@@ -353,15 +353,11 @@ impl<'a, T: Figure> Display for DisplayType<'a, T> {
                 let description = if fig.fig() > 0.0 { "up" } else { "down" };
                 write!(f, "{} {:.1}%", description, (100.0 * fig.fig().abs()))
             }
-            DisplayType::PerFrequency(fig, old_freq, new_freq) => write!(
+            DisplayType::PerFrequency(fig, span, freq) => write!(
                 f,
                 "{:.1} per {}",
-                {
-                    fig.fig()
-                        / TimeFrequency::divide(new_freq, old_freq)
-                            .expect("Cannot convert Frequency of Data accurately")
-                },
-                match new_freq {
+                { fig.fig() * (span.clone() / freq.clone()) },
+                match freq {
                     TimeFrequency::Yearly => "year",
                     TimeFrequency::Quarterly => "quarter",
                     TimeFrequency::Monthly => "month",

@@ -32,8 +32,8 @@ fn _add_month(date: NaiveDate) -> NaiveDate {
 
 fn main() {
     let date = NaiveDate::from_ymd(2022, 2, 4);
-
     let name = String::from("website_visits");
+
     let data = Data::read(name).unwrap();
     let span = TimeSpan::new(&date, data.frequency.clone());
 
@@ -53,8 +53,12 @@ fn main() {
                     .expect("Couldn't read");
                 if let Some(point) = datapoints.get(&span) {
                     let num = ComputedStringMetric {
-                        fig: DisplayType::PerFrequency(point, &data.frequency, &metric.frequency)
-                            .to_string(),
+                        fig: DisplayType::PerFrequency(
+                            point,
+                            span.clone(),
+                            metric.frequency.clone(),
+                        )
+                        .to_string(),
                         time_periods: vec![],
                     };
                     let text = hbs.render_template(&metric.long_text, &num).unwrap();
