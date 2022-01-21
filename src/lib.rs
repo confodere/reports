@@ -54,11 +54,15 @@ impl Metric {
     pub fn freq(&self) -> &TimeFrequency {
         &self.frequency
     }
+
+    pub fn partial_name(&self, data: &Data) -> String {
+        format!("{}_{}_{}", data.name, self.calculation_type, self.frequency)
+    }
 }
 
-pub trait Figure: Serialize {
+pub trait Figure {
     fn fig(&self) -> f64;
-    fn render(&self, ctx: RenderContext) -> ComputedStringMetric;
+    fn render(&self, ctx: RenderContext, partial_name: String) -> ComputedStringMetric;
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -74,7 +78,7 @@ impl Figure for Change {
         (self.new - self.old) / self.old
     }
 
-    fn render(&self, ctx: RenderContext) -> ComputedStringMetric {
+    fn render(&self, ctx: RenderContext, partial_name: String) -> ComputedStringMetric {
         ComputedStringMetric {
             fig: match ctx {
                 RenderContext::Words => DisplayType::DescribedPercentage(self).to_string(),
@@ -84,6 +88,7 @@ impl Figure for Change {
                 (self.span.clone() - self.frequency.clone()).to_string(),
                 self.span.clone().to_string(),
             ],
+            partial_name,
         }
     }
 }
@@ -111,6 +116,47 @@ impl<'a> Change {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct AvgFreq {
+    fig: f64,
+    span: TimeSpan,
+    frequency: TimeFrequency,
+}
+
+impl Figure for AvgFreq {
+    fn fig(&self) -> f64 {
+        self.fig * (self.span.clone() / self.frequency.clone())
+    }
+
+    fn render(&self, _ctx: RenderContext, partial_name: String) -> ComputedStringMetric {
+        ComputedStringMetric {
+            fig: format!(
+                "{:.1} per {}",
+                self.fig(),
+                match self.frequency {
+                    TimeFrequency::Yearly => "year",
+                    TimeFrequency::Quarterly => "quarter",
+                    TimeFrequency::Monthly => "month",
+                    TimeFrequency::Weekly => "week",
+                    TimeFrequency::Daily => "day",
+                }
+            ),
+            time_periods: vec![],
+            partial_name,
+        }
+    }
+}
+
+impl AvgFreq {
+    pub fn from(fig: impl Figure, span: TimeSpan, frequency: TimeFrequency) -> AvgFreq {
+        AvgFreq {
+            fig: fig.fig(),
+            span,
+            frequency,
+        }
+    }
+}
+
 impl Display for Change {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", DisplayType::DescribedPercentage(self))
@@ -121,8 +167,10 @@ impl Display for Change {
 pub struct ComputedStringMetric {
     pub fig: String,
     pub time_periods: Vec<String>,
+    pub partial_name: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 pub enum RenderContext {
     Words,
     Numbers,
@@ -138,18 +186,41 @@ impl Figure for Fig {
         self.fig
     }
 
-    fn render(&self, _ctx: RenderContext) -> ComputedStringMetric {
+    fn render(&self, _ctx: RenderContext, partial_name: String) -> ComputedStringMetric {
         ComputedStringMetric {
             fig: self.fig().to_string(),
             time_periods: vec![],
+            partial_name,
         }
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub enum Figures {
     Change(Change),
     Fig(Fig),
-    Datapoint(Point),
+    Point(Point),
+    AvgFreq(AvgFreq),
+}
+
+impl Figure for Figures {
+    fn fig(&self) -> f64 {
+        match self {
+            Figures::Change(i) => i.fig(),
+            Figures::Fig(i) => i.fig(),
+            Figures::Point(i) => i.fig(),
+            Figures::AvgFreq(i) => i.fig(),
+        }
+    }
+
+    fn render(&self, ctx: RenderContext, partial_name: String) -> ComputedStringMetric {
+        match self {
+            Figures::Change(i) => i.render(ctx, partial_name),
+            Figures::Fig(i) => i.render(ctx, partial_name),
+            Figures::Point(i) => i.render(ctx, partial_name),
+            Figures::AvgFreq(i) => i.render(ctx, partial_name),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -316,10 +387,11 @@ impl Figure for Point {
         self.value
     }
 
-    fn render(&self, _ctx: RenderContext) -> ComputedStringMetric {
+    fn render(&self, _ctx: RenderContext, partial_name: String) -> ComputedStringMetric {
         ComputedStringMetric {
             fig: self.value.to_string(),
             time_periods: vec![self.when.to_string()],
+            partial_name,
         }
     }
 }
@@ -405,6 +477,13 @@ pub struct Paragraph<T: Figure> {
     pub fig: T,
 }
 
+#[derive(Serialize)]
+pub struct HbsData {
+    pub data: HashMap<String, ComputedStringMetric>,
+    pub figs: HashMap<String, Figures>,
+    pub context: RenderContext,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,7 +512,7 @@ mod tests {
 
         let change = Change::from(&data, span.clone(), TimeFrequency::Yearly);
         if let Ok(change) = change {
-            let data = change.render(RenderContext::Words);
+            let data = change.render(RenderContext::Words, String::from(""));
 
             assert_eq!(data.fig, "up 64.6%");
         } else {

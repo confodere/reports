@@ -1,8 +1,9 @@
 use chrono::{Datelike, Month, NaiveDate};
-use handlebars::Handlebars;
+use handlebars::{handlebars_helper, Context, Handlebars, Helper, HelperResult, Output};
 use num_traits::FromPrimitive;
 use reports::*;
-use std::vec;
+use serde_json;
+use std::collections::HashMap;
 
 fn _add_year_month(year: i32, month: u32) -> (i32, u32) {
     let month = if let Some(month) = Month::from_u32(month) {
@@ -30,6 +31,25 @@ fn _add_month(date: NaiveDate) -> NaiveDate {
     NaiveDate::from_ymd(year, month, day)
 }
 
+fn simple_helper<T: Figure>(
+    h: &Helper,
+    _: &Handlebars,
+    _: &Context,
+    _rc: &mut handlebars::RenderContext,
+    out: &mut dyn Output,
+) -> HelperResult {
+    let param: Figures = serde_json::from_value(h.param(0).unwrap().value().clone())?;
+
+    let c = h.param(1).unwrap().value();
+
+    out.write(
+        &param
+            .render(serde_json::from_value(c.clone())?, String::from(""))
+            .fig,
+    )?;
+    Ok(())
+}
+
 fn main() {
     let date = NaiveDate::from_ymd(2022, 2, 4);
     let name = String::from("website_visits");
@@ -37,37 +57,78 @@ fn main() {
     let data = Data::read(name).unwrap();
     let span = TimeSpan::new(&date, data.frequency.clone());
 
-    let hbs = Handlebars::new();
+    let mut hbs = Handlebars::new();
+    let mut computed = HashMap::new();
+    let mut figs: HashMap<String, Figures> = HashMap::new();
     for metric in &data.metrics {
         match &metric.calculation_type[..] {
             "Change" => {
                 let change = Change::from(&data, span.clone(), metric.frequency.clone())
                     .expect("Oh no!")
-                    .render(RenderContext::Words);
-                let text = hbs.render_template(&metric.long_text, &change).unwrap();
-                println!("{}", text);
+                    .render(RenderContext::Words, metric.partial_name(&data));
+                computed.insert(metric.partial_name(&data), change);
+                figs.insert(
+                    metric.partial_name(&data),
+                    Figures::Change(
+                        Change::from(&data, span.clone(), metric.frequency.clone()).expect("Oh no"),
+                    ),
+                );
+                hbs.register_template_string(&metric.partial_name(&data), &metric.long_text)
+                    .unwrap();
             }
             "AvgFreq" => {
                 let datapoints = data
                     .read_points(span.start(), span.end())
                     .expect("Couldn't read");
                 if let Some(point) = datapoints.get(&span) {
-                    let num = ComputedStringMetric {
-                        fig: DisplayType::PerFrequency(
-                            point,
-                            span.clone(),
-                            metric.frequency.clone(),
-                        )
-                        .to_string(),
-                        time_periods: vec![],
-                    };
-                    let text = hbs.render_template(&metric.long_text, &num).unwrap();
-                    println!("{}", text);
+                    let num = AvgFreq::from(point.clone(), span.clone(), metric.frequency.clone());
+                    let rendered = num.render(RenderContext::Words, metric.partial_name(&data));
+                    computed.insert(metric.partial_name(&data), rendered);
+                    figs.insert(metric.partial_name(&data), Figures::AvgFreq(num));
+                    hbs.register_partial(&metric.partial_name(&data), &metric.long_text)
+                        .unwrap();
                 }
             }
             _ => panic!("Oh no"),
         }
     }
+
+    let tree = HbsData {
+        data: computed,
+        context: RenderContext::Words,
+        figs,
+    };
+
+    handlebars_helper!(render: | obj: Change, context: RenderContext | obj.render(context, String::from("nah")).fig);
+    hbs.register_helper("draw", Box::new(simple_helper::<Figures>));
+
+    hbs.register_template_string(
+        "template",
+        r#"
+    {{#> layout}}
+    {{#*inline "thingo"}}
+        {{#each data as |item|}}
+        - {{> (lookup item "partial_name") fig=(draw (lookup ../figs @key) ../context)}}
+        {{/each}}
+    {{/inline}}
+    {{/layout}}
+    
+    {{#*inline "layout"}}
+    # Top Highlights
+    {{> thingo}}
+    {{/inline}}
+    
+    {{> layout}}
+
+    "#,
+    )
+    .expect("Error registering template");
+
+    let rendered = hbs
+        .render("template", &tree)
+        .expect("Error rendering template");
+
+    println!("{}", rendered);
 
     // Assumes sample data (not distributed) is already in database:
     // Metrics {users, users_change, website_visits}

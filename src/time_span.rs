@@ -221,6 +221,12 @@ impl ToSql for TimeFrequency {
     }
 }
 
+impl fmt::Display for TimeFrequency {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:#?}", self)
+    }
+}
+
 /// Provides a display format for each variant of TimePeriod
 ///
 /// # Examples
@@ -236,7 +242,7 @@ impl ToSql for TimeFrequency {
 /// let year = TimeSpan::new(&date, TimeFrequency::Yearly);
 ///
 /// assert_eq!(day.to_string(), "17/01/2022");
-/// assert_eq!(week.to_string(), "2022 (17th January to 23rd  January)");
+/// assert_eq!(week.to_string(), "2022 (17th January to 23rd January)");
 /// assert_eq!(month.to_string(), "January 2022");
 /// assert_eq!(quarter.to_string(), "Q1 2022");
 /// assert_eq!(year.to_string(), "2022");
@@ -291,7 +297,7 @@ fn ordinal_date(n: &u32) -> &str {
     } else if s.ends_with("2") && !s.ends_with("12") {
         "nd"
     } else if s.ends_with("3") && !s.ends_with("13") {
-        "rd "
+        "rd"
     } else {
         "th"
     }
