@@ -4,7 +4,7 @@ use num_traits::FromPrimitive;
 use reports::*;
 use serde::Serialize;
 use serde_json;
-use std::collections::HashMap;
+use std::fs;
 
 fn _add_year_month(year: i32, month: u32) -> (i32, u32) {
     let month = if let Some(month) = Month::from_u32(month) {
@@ -70,9 +70,9 @@ fn compute_figure(metric: &Metric, render_context: RenderContext) -> ComputedStr
 
 #[derive(Serialize)]
 struct FedData {
-    computed: HashMap<String, ComputedStringMetric>,
     metrics: Vec<Metric>,
-    render_context: RenderContext,
+    words_render_context: RenderContext,
+    nums_render_context: RenderContext,
 }
 
 fn main() {
@@ -83,62 +83,28 @@ fn main() {
 
     let mut hbs = Handlebars::new();
 
-    let mut computed_figures = HashMap::new();
-
     for metric in metrics.clone() {
         hbs.register_partial(&metric.partial_name(), &metric.long_text)
             .expect("Failed to register partial");
-        computed_figures.insert(
-            metric.partial_name(),
-            compute_figure(&metric, RenderContext::Words),
-        );
     }
 
-    handlebars_helper!(render: | obj: Change, context: RenderContext | obj.render(context, String::from("nah")).fig);
+    handlebars_helper!(prev_span: | metric: Metric | (&metric.data.span - metric.frequency).to_string());
+    handlebars_helper!(partial_name: | metric: Metric | metric.partial_name() );
+    hbs.register_helper("prev_span", Box::new(prev_span));
+    hbs.register_helper("partial_name", Box::new(partial_name));
     hbs.register_helper("num", Box::new(simple_helper));
 
     //- {{> (lookup item "partial_name") fig=(draw (lookup ../figs @key) ../context)}}
 
-    hbs.register_template_string(
-        "template",
-        r#"
-    {{#> layout}}
-    {{#*inline "thingo"}}
-        {{#each computed as |item|}}
-        - {{> (lookup item "partial_name")}}
-        {{/each}}
-    {{/inline}}
-    {{#*inline "description"}}
-        | {{frequency}} | {{calculation_type}} | {{num this ../render_context}} |
-    {{/inline}}
-    {{/layout}}
-    
-    {{#*inline "layout"}}
-    # Top Highlights
-    {{> thingo}}
-
-    | Frequency | Calculation | Value |
-    | --------- | ----------- | ----- |
-    {{#each metrics}}
-        {{> description}}
-    {{/each}}
-    {{/inline}}
-    
-    {{> layout}}
-
-    "#,
-    )
-    .expect("Error registering template");
-
     let fd = FedData {
-        computed: computed_figures,
         metrics,
-        render_context: RenderContext::Words,
+        words_render_context: RenderContext::Words,
+        nums_render_context: RenderContext::Numbers,
     };
 
-    let rendered = hbs
-        .render("template", &fd)
-        .expect("Error rendering template");
+    hbs.register_template_file("tpl", "templates/template.md")
+        .unwrap();
 
-    println!("{}", rendered);
+    let file = fs::File::create("ignore/example-book/src/output.md").unwrap();
+    hbs.render_to_write("tpl", &fd, &file).unwrap();
 }
