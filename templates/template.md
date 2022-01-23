@@ -1,22 +1,35 @@
 {{#> layout}}
 {{#*inline "thingo"}}
-    {{#each metrics as |metric|}}
-- {{> (partial_name metric) fig=(num metric ../words_render_context) prev=(prev_span metric)}}
-
-    {{/each}}
+    {{#each contents as |line| }}
+- {{#each line as |metric|}}{{num metric ../../../words_render_context}}{{#unless @last}}, {{/unless}}{{#if @last}}.{{/if}}{{/each}}
+{{/each}}
 {{/inline}}
 {{#*inline "table"}}
 | Frequency | Calculation | Value |
 | --------- | ----------- | ----- |
-{{#each metrics}}
-| {{frequency}} | {{calculation_type}} | {{num this ../nums_render_context}} |
+{{#each contents as |line|}}
+{{#each line as |metric|}}
+| {{frequency}} | {{calculation_type}} | {{num metric ../../../nums_render_context}} |
+{{/each}}
 {{/each}}
 {{/inline}}
 {{/layout}}
 {{#*inline "layout"}}
-# Top Highlights
+
+{{#each paragraphs}}
+# {{name}}
 {{> thingo}}
 
 {{> table}}
+
+{{/each}}
+
+## Table
+
+| Source | Number | Description |
+| ------ | ------ | ----------- |
+{{#each data_table}}
+{{tbl this ../date}}
+{{/each}}
 {{/inline}}
 {{> layout}}
