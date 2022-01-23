@@ -6,7 +6,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::ops::{Add, Div, Sub};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Copy)]
 pub struct TimeSpan {
     start_date: NaiveDate,
     frequency: TimeFrequency,
@@ -39,54 +39,83 @@ impl TimeSpan {
     }
 
     pub fn end(&self) -> NaiveDate {
-        (self.clone() + self.clone().frequency).start_date - Duration::days(1)
+        (self + self.frequency).start_date - Duration::days(1)
+    }
+
+    pub fn freq(&self) -> TimeFrequency {
+        self.frequency
     }
 }
 
-impl Add<TimeFrequency> for TimeSpan {
-    type Output = Self;
+fn diff(span: &TimeSpan, frequency: &TimeFrequency, change: i32) -> NaiveDate {
+    match frequency {
+        TimeFrequency::Yearly => match span.frequency {
+            TimeFrequency::Weekly => NaiveDate::from_isoywd(
+                span.start_date.year() + change,
+                span.start_date.iso_week().week(),
+                span.start_date.weekday(),
+            ),
+            _ => delta::shift_years(span.start_date, change),
+        },
+        TimeFrequency::Quarterly => delta::shift_months(span.start_date, 3 * change),
+        TimeFrequency::Monthly => delta::shift_months(span.start_date, change),
+        TimeFrequency::Weekly => span.start_date + Duration::days((7 * change).into()),
+        TimeFrequency::Daily => span.start_date + Duration::days(change.into()),
+    }
+}
 
-    fn add(self, rhs: TimeFrequency) -> Self::Output {
+impl Add<TimeFrequency> for &TimeSpan {
+    type Output = TimeSpan;
+
+    fn add(self, rhs: TimeFrequency) -> TimeSpan {
         TimeSpan {
-            start_date: match rhs {
-                TimeFrequency::Yearly => match self.frequency {
-                    TimeFrequency::Weekly => NaiveDate::from_isoywd(
-                        self.start_date.year() + 1,
-                        self.start_date.iso_week().week(),
-                        self.start_date.weekday(),
-                    ),
-                    _ => delta::shift_years(self.start_date, 1),
-                },
-                TimeFrequency::Quarterly => delta::shift_months(self.start_date, 3),
-                TimeFrequency::Monthly => delta::shift_months(self.start_date, 1),
-                TimeFrequency::Weekly => self.start_date + Duration::days(7),
-                TimeFrequency::Daily => self.start_date + Duration::days(1),
-            },
+            start_date: diff(self, &rhs, 1),
             frequency: self.frequency,
         }
     }
 }
 
-impl Sub<TimeFrequency> for TimeSpan {
-    type Output = Self;
+impl Sub<TimeFrequency> for &TimeSpan {
+    type Output = TimeSpan;
 
-    fn sub(self, rhs: TimeFrequency) -> Self::Output {
+    fn sub(self, rhs: TimeFrequency) -> TimeSpan {
         TimeSpan {
-            start_date: match rhs {
-                TimeFrequency::Yearly => match self.frequency {
-                    TimeFrequency::Weekly => NaiveDate::from_isoywd(
-                        self.start_date.year() - 1,
-                        self.start_date.iso_week().week(),
-                        self.start_date.weekday(),
-                    ),
-                    _ => delta::shift_years(self.start_date, -1),
-                },
-                TimeFrequency::Quarterly => delta::shift_months(self.start_date, -3),
-                TimeFrequency::Monthly => delta::shift_months(self.start_date, -1),
-                TimeFrequency::Weekly => self.start_date - Duration::days(7),
-                TimeFrequency::Daily => self.start_date - Duration::days(1),
-            },
+            start_date: diff(self, &rhs, -1),
             frequency: self.frequency,
+        }
+    }
+}
+
+pub struct TimeSpanIter {
+    span: TimeSpan,
+    frequency: TimeFrequency,
+    depth: i32,
+    count: i32,
+}
+
+impl TimeSpanIter {
+    pub fn new(span: TimeSpan, frequency: TimeFrequency, depth: i32) -> TimeSpanIter {
+        TimeSpanIter {
+            span,
+            frequency,
+            depth,
+            count: 0,
+        }
+    }
+}
+
+impl Iterator for TimeSpanIter {
+    type Item = TimeSpan;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.count < self.depth {
+            if self.count > 0 {
+                self.span.start_date = diff(&self.span, &self.frequency, -1);
+            }
+            self.count += 1;
+            Some(self.span)
+        } else {
+            None
         }
     }
 }
@@ -193,7 +222,7 @@ impl Div<TimeFrequency> for TimeSpan {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, Copy)]
 pub enum TimeFrequency {
     Yearly = 1,
     Quarterly = 4,
