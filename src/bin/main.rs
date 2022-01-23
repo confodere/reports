@@ -2,6 +2,7 @@ use chrono::{Datelike, Month, NaiveDate};
 use handlebars::{handlebars_helper, Context, Handlebars, Helper, HelperResult, Output};
 use num_traits::FromPrimitive;
 use reports::*;
+use serde::Serialize;
 use serde_json;
 use std::collections::HashMap;
 
@@ -36,11 +37,13 @@ fn simple_helper(
     _: &Handlebars,
     _: &Context,
     _rc: &mut handlebars::RenderContext,
-    _out: &mut dyn Output,
+    out: &mut dyn Output,
 ) -> HelperResult {
-    let _metric: Metric = serde_json::from_value(h.param(0).unwrap().value().clone())?;
+    let metric: Metric = serde_json::from_value(h.param(0).unwrap().value().clone())?;
 
-    let _render_context = serde_json::from_value(h.param(1).unwrap().value().clone())?;
+    let render_context = serde_json::from_value(h.param(1).unwrap().value().clone())?;
+
+    out.write(&compute_figure(&metric, render_context).fig)?;
 
     Ok(())
 }
@@ -65,6 +68,13 @@ fn compute_figure(metric: &Metric, render_context: RenderContext) -> ComputedStr
     fig.render(render_context, metric.partial_name())
 }
 
+#[derive(Serialize)]
+struct FedData {
+    computed: HashMap<String, ComputedStringMetric>,
+    metrics: Vec<Metric>,
+    render_context: RenderContext,
+}
+
 fn main() {
     let date = NaiveDate::from_ymd(2022, 2, 4);
     let name = String::from("website_visits");
@@ -74,7 +84,8 @@ fn main() {
     let mut hbs = Handlebars::new();
 
     let mut computed_figures = HashMap::new();
-    for metric in metrics {
+
+    for metric in metrics.clone() {
         hbs.register_partial(&metric.partial_name(), &metric.long_text)
             .expect("Failed to register partial");
         computed_figures.insert(
@@ -84,7 +95,7 @@ fn main() {
     }
 
     handlebars_helper!(render: | obj: Change, context: RenderContext | obj.render(context, String::from("nah")).fig);
-    hbs.register_helper("draw", Box::new(simple_helper));
+    hbs.register_helper("num", Box::new(simple_helper));
 
     //- {{> (lookup item "partial_name") fig=(draw (lookup ../figs @key) ../context)}}
 
@@ -93,15 +104,24 @@ fn main() {
         r#"
     {{#> layout}}
     {{#*inline "thingo"}}
-        {{#each this as |item|}}
+        {{#each computed as |item|}}
         - {{> (lookup item "partial_name")}}
         {{/each}}
+    {{/inline}}
+    {{#*inline "description"}}
+        | {{frequency}} | {{calculation_type}} | {{num this ../render_context}} |
     {{/inline}}
     {{/layout}}
     
     {{#*inline "layout"}}
     # Top Highlights
     {{> thingo}}
+
+    | Frequency | Calculation | Value |
+    | --------- | ----------- | ----- |
+    {{#each metrics}}
+        {{> description}}
+    {{/each}}
     {{/inline}}
     
     {{> layout}}
@@ -110,8 +130,14 @@ fn main() {
     )
     .expect("Error registering template");
 
+    let fd = FedData {
+        computed: computed_figures,
+        metrics,
+        render_context: RenderContext::Words,
+    };
+
     let rendered = hbs
-        .render("template", &computed_figures)
+        .render("template", &fd)
         .expect("Error rendering template");
 
     println!("{}", rendered);
