@@ -193,8 +193,8 @@ fn main() {
         name: String::from("Top Highlights"),
     }];
 
-    let config_file = fs::File::create("ignore/struct.json").unwrap();
-    serde_json::to_writer_pretty(&config_file, &paragraphs).unwrap();
+    let config_file = fs::File::create("ignore/struct.json").expect("Error reading config");
+    serde_json::to_writer_pretty(&config_file, &paragraphs).expect("Error writing config");
 
     let mut hbs = Handlebars::new();
 
