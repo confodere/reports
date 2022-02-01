@@ -1,8 +1,7 @@
-use core::fmt;
-use std::{collections::HashMap, fmt::Display};
-
 use chrono::NaiveDate;
+use core::fmt;
 use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, fmt::Display};
 
 use rusqlite::{params, Connection};
 
@@ -260,6 +259,16 @@ pub struct ComputedStringMetric {
 pub enum RenderContext {
     Words,
     Numbers,
+}
+
+impl RenderContext {
+    fn _from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "Words" => RenderContext::Words,
+            "Numbers" => RenderContext::Numbers,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize)]

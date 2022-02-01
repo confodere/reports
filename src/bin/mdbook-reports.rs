@@ -14,10 +14,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Check whether a renderer in supported by this preprocessor
-    Supports {
-        #[clap(short, long)]
-        renderer: Option<String>,
-    },
+    Supports { renderer: Option<String> },
 }
 
 fn main() {
@@ -32,13 +29,14 @@ fn main() {
             None => handle_preprocessing(&preprocessor),
         }
     } {
-        eprintln!("{}", e);
+        eprintln!("Preprocess error: {}", e);
         process::exit(1);
     }
 }
 
 fn handle_preprocessing(pre: &dyn Preprocessor) -> Result<(), mdbook::errors::Error> {
     let (ctx, book) = CmdPreprocessor::parse_input(io::stdin())?;
+    // Should probably check for version compatibility here
 
     let processed_book = pre.run(&ctx, book)?;
     serde_json::to_writer(io::stdout(), &processed_book)?;
@@ -52,10 +50,8 @@ fn handle_supports(pre: &dyn Preprocessor, renderer: &Option<String>) -> ! {
 
     // Signal whether the renderer is supported by exiting with 1 or 0
     if supported {
-        println!("You're supported!");
         process::exit(0);
     } else {
-        println!("You're not supported");
         process::exit(1);
     }
 }
