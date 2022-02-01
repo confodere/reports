@@ -9,6 +9,9 @@ use rusqlite::{params, Connection};
 mod time_span;
 pub use crate::time_span::{TimeFrequency, TimeSpan, TimeSpanIter};
 
+mod report_process;
+pub use crate::report_process::*;
+
 const DATABASE_FILE: &str = "ignore/data.db";
 
 const READ_DATA: &str = r#"
