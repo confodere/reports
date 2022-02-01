@@ -1,9 +1,13 @@
 use chrono::{Datelike, Month, NaiveDate};
-use handlebars::{handlebars_helper, Context, Handlebars, Helper, HelperResult, Output};
+use handlebars::RenderError;
+use handlebars::{
+    handlebars_helper, BlockContext, Context, Handlebars, Helper, HelperDef, HelperResult, Output,
+    Renderable,
+};
 use num_traits::FromPrimitive;
 use reports::*;
 use serde::{Deserialize, Serialize};
-use serde_json;
+use serde_json::{self, json};
 use std::fs;
 
 fn _add_year_month(year: i32, month: u32) -> (i32, u32) {
@@ -100,6 +104,53 @@ fn create_table(
     }
     Ok(())
 }
+
+#[derive(Clone, Copy)]
+struct TableHelper;
+
+impl HelperDef for TableHelper {
+    fn call<'reg: 'rc, 'rc>(
+        &self,
+        h: &Helper<'reg, 'rc>,
+        r: &'reg Handlebars<'reg>,
+        ctx: &'rc Context,
+        rc: &mut handlebars::RenderContext<'reg, 'rc>,
+        out: &mut dyn Output,
+    ) -> HelperResult {
+        let data = h
+            .param(0)
+            .ok_or_else(|| RenderError::new("Data param not found for helper \"table\""))?;
+        let date = h
+            .param(1)
+            .ok_or_else(|| RenderError::new("Date param not found for helper \"table\""))?;
+        let data = data.value().as_str().ok_or_else(|| {
+            RenderError::new("Couldn't convert value to string for helper \"table\"")
+        })?;
+        let date = serde_json::from_value(date.value().clone())?;
+
+        let data = Data::read(&data.to_string(), &date).expect("Cannot read data");
+        let point = data.read_point().expect("Cannot read point");
+
+        let mut values = vec![data.long_name, point.fig().to_string()];
+        if let Some(description) = data.description {
+            values.push(description)
+        }
+
+        let mut block = BlockContext::new();
+        block.set_base_value(json!(values));
+
+        rc.push_block(block);
+
+        if let Some(template) = h.template() {
+            template.render(r, ctx, rc, out)?;
+        };
+
+        rc.pop_block();
+
+        Ok(())
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Sample {
     fig: String,
@@ -153,6 +204,7 @@ fn main() {
     hbs.register_helper("partial_name", Box::new(partial_name));
     hbs.register_helper("num", Box::new(simple_helper));
     hbs.register_helper("tbl", Box::new(create_table));
+    hbs.register_helper("table", Box::new(TableHelper));
 
     //- {{> (lookup item "partial_name") fig=(draw (lookup ../figs @key) ../context)}}
 

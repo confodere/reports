@@ -1,7 +1,7 @@
 {{#> layout}}
 {{#*inline "thingo"}}
     {{#each contents as |line| }}
-- {{#each line as |metric|}}{{num metric ../../../words_render_context}}{{#unless @last}}, {{/unless}}{{#if @last}}.{{/if}}{{/each}}
+- {{#each line as |metric|}}{{num metric @root.words_render_context}}{{#unless @last}}, {{/unless}}{{#if @last}}.{{/if}}{{/each}}
 {{/each}}
 {{/inline}}
 {{#*inline "table"}}
@@ -9,7 +9,7 @@
 | --------- | ----------- | ----- |
 {{#each contents as |line|}}
 {{#each line as |metric|}}
-| {{frequency}} | {{calculation_type}} | {{num metric ../../../nums_render_context}} |
+| {{frequency}} | {{calculation_type}} | {{num metric @root.nums_render_context}} |
 {{/each}}
 {{/each}}
 {{/inline}}
@@ -29,7 +29,10 @@
 | Source | Number | Description |
 | ------ | ------ | ----------- |
 {{#each data_table}}
-{{tbl this ../date}}
+{{#table this @root.date}}
+{{#each this}}{{#if @first}}|{{/if}} {{this}} | {{/each}}
+{{/table}}
 {{/each}}
+
 {{/inline}}
 {{> layout}}
