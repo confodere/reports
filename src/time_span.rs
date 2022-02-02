@@ -110,7 +110,10 @@ impl Iterator for TimeSpanIter {
     fn next(&mut self) -> Option<Self::Item> {
         if self.count < self.depth {
             if self.count > 0 {
-                self.span.start_date = diff(&self.span, &self.frequency, -1);
+                self.span.start_date = TimeSpan::find_start_date(
+                    &diff(&self.span, &self.frequency, -1),
+                    &self.span.frequency,
+                );
             }
             self.count += 1;
             Some(self.span)

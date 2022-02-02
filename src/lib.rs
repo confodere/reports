@@ -56,7 +56,7 @@ impl Metric {
     }
 
     /// Inserts current metric into sqlite3 database
-    pub fn write(&self, name: String) -> rusqlite::Result<()> {
+    pub fn write(&self) -> rusqlite::Result<()> {
         let conn = Connection::open(DATABASE_FILE)?;
 
         conn.execute(
@@ -72,8 +72,8 @@ impl Metric {
         )?;
 
         conn.execute(
-            "INSERT INTO Metric (data_name, long_text, calculation_type, frequency) VALUES (?1, ?2, ?3, ?4)",
-            params![name, self.frequency],
+            "INSERT OR IGNORE INTO Metric (data_name, long_text, calculation_type, frequency) VALUES (?1, ?2, ?3, ?4)",
+            params![self.data.name, self.long_text, self.calculation_type, self.frequency],
         )?;
 
         Ok(())
@@ -140,7 +140,10 @@ pub trait Figure {
                 if let Some(point) = points.get(&span) {
                     Ok(point.fig())
                 } else {
-                    return Err(format!("Couldn't find datapoint from span: {:#?}", span));
+                    return Err(format!(
+                        "Couldn't find datapoint from span: {:#?} in {:#?}",
+                        span, points
+                    ));
                 }
             })
             .collect::<Result<Vec<_>, _>>()
@@ -354,7 +357,7 @@ impl Data {
         )?;
 
         conn.execute(
-            "INSERT INTO Data (name, long_name, description, frequency) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR IGNORE INTO Data (name, long_name, description, frequency) VALUES (?1, ?2, ?3, ?4)",
             params![
                 self.name,
                 self.long_name,
@@ -508,7 +511,7 @@ impl Point {
         )?;
 
         conn.execute(
-            "INSERT INTO Point (data_name, naive_date, val) VALUES (?1, ?2, ?3)",
+            "INSERT OR IGNORE INTO Point (data_name, naive_date, val) VALUES (?1, ?2, ?3)",
             params![data.name, self.when, self.value],
         )?;
 
