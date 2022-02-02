@@ -62,10 +62,12 @@ struct Substitutions {
 }
 
 fn pre_process(chapter: &mut Chapter, cfg: Option<&Map<String, Value>>) -> BoxResult<()> {
+    let date = cfg_date(cfg)?;
     lazy_static! {
         static ref RE: Regex = Regex::new(
             r"(?x)  # Ignore whitespace
         (?:\{\{\#)  # {{#
+        ([^\s]*)\s  # Keyword
         (.+)        # Capture one or more of anything
         (?:\}\})    # }}
         "
@@ -77,12 +79,17 @@ fn pre_process(chapter: &mut Chapter, cfg: Option<&Map<String, Value>>) -> BoxRe
     // passing on any non-keywords in the match
     let mut subs: Vec<Substitutions> = Vec::new();
     for cap in RE.captures_iter(&chapter.content) {
-        let mut words = cap[1].split(" ");
-        let keyword = words.next().expect("Missing keyword");
-        let words = words.collect::<Vec<&str>>();
+        let keyword = match cap.get(1) {
+            None => {
+                eprintln!("Missing Keyword in preprocessor");
+                continue;
+            }
+            Some(word) => word.as_str(),
+        };
+        let words = cap[2].split(" ").collect::<Vec<&str>>();
         let substitute = match keyword {
-            "table" => make_table(words, cfg),
-            "seti" => make_single_table(words, cfg),
+            "table" => make_table(words, &date),
+            "seti" => make_single_table(words, &date),
             _ => {
                 eprintln!("Failed to match keyword {}", keyword);
                 continue;
@@ -127,9 +134,7 @@ fn cfg_date(cfg: Option<&Map<String, Value>>) -> BoxResult<NaiveDate> {
 }
 
 /// Expects words to be a list of names of Data
-fn make_table(words: Vec<&str>, cfg: Option<&Map<String, Value>>) -> BoxResult<String> {
-    let date = cfg_date(cfg)?;
-
+fn make_table(words: Vec<&str>, date: &NaiveDate) -> BoxResult<String> {
     let mut table =
         String::from("\n| Source | Number | Description | \n| ----- | ----- | ----- | \n");
 
@@ -154,8 +159,7 @@ fn make_table(words: Vec<&str>, cfg: Option<&Map<String, Value>>) -> BoxResult<S
     Ok(table)
 }
 
-fn make_single_table(words: Vec<&str>, cfg: Option<&Map<String, Value>>) -> BoxResult<String> {
-    let date = cfg_date(cfg)?;
+fn make_single_table(words: Vec<&str>, date: &NaiveDate) -> BoxResult<String> {
     let mut table = String::from("\n| Calculation | Frequency | Value | \n| --- | --- | --- | \n");
     for word in words {
         let words = word.split(",").collect::<Vec<&str>>();
@@ -176,4 +180,143 @@ fn make_single_table(words: Vec<&str>, cfg: Option<&Map<String, Value>>) -> BoxR
         }
     }
     Ok(table)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Point, TimeSpan};
+
+    fn setup() -> BoxResult<()> {
+        let date = Local::today().naive_local();
+        let freq = TimeFrequency::Weekly;
+        let span = TimeSpan::new(&date, freq);
+
+        let data_1 = Data::new(
+            String::from("cat_purrs"),
+            String::from("Cat Purrs"),
+            Some(String::from(
+                "A measure of the number of times my cat purred",
+            )),
+            freq,
+            &date,
+        );
+        let data_2 = Data::new(
+            String::from("dog_woofs"),
+            String::from("Dog Woofs"),
+            Some(String::from(
+                "A measure of the number of times my dog woofed",
+            )),
+            freq,
+            &date,
+        );
+        let data_3 = Data::new(
+            String::from("fish_zooms"),
+            String::from("Fish Zooms"),
+            Some(String::from(
+                "A measure of the number of times my fish zoomed",
+            )),
+            freq,
+            &date,
+        );
+
+        data_1.write()?;
+        data_2.write()?;
+        data_3.write()?;
+
+        Point::new(10.0, date.clone()).write(&data_1)?;
+        Point::new(8.0, *(&span - freq).start()).write(&data_1)?;
+        Point::new(3.0, *(&span - TimeFrequency::Quarterly).start()).write(&data_1)?;
+
+        Point::new(25.0, date.clone()).write(&data_2)?;
+        Point::new(64.0, *(&span - freq).start()).write(&data_2)?;
+        Point::new(3.0, *(&span - TimeFrequency::Yearly).start()).write(&data_2)?;
+
+        Point::new(3.0, date.clone()).write(&data_3)?;
+        Point::new(3.5, *(&span - freq).start()).write(&data_3)?;
+        Point::new(4.2, *(&span - TimeFrequency::Monthly).start()).write(&data_3)?;
+
+        Metric::new(
+            data_1.clone(),
+            String::from("Weekly change was {{fig}}"),
+            freq,
+            String::from("Change"),
+        )
+        .write()?;
+
+        Metric::new(
+            data_1.clone(),
+            String::from("Change from {{prev}} was {{fig}}"),
+            TimeFrequency::Quarterly,
+            String::from("Change"),
+        )
+        .write()?;
+
+        Metric::new(
+            data_2.clone(),
+            String::from("Change from {{prev}} was {{fig}}"),
+            TimeFrequency::Yearly,
+            String::from("Change"),
+        )
+        .write()?;
+
+        Metric::new(
+            data_3.clone(),
+            String::from("Daily equivalent is {{fig}}"),
+            TimeFrequency::Daily,
+            String::from("AvgFreq"),
+        )
+        .write()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_table() {
+        setup().unwrap();
+
+        let date = Local::today().naive_local();
+        let words = vec!["cat_purrs", "dog_woofs", "fish_zooms"];
+
+        let table = make_table(words, &date).unwrap();
+        let expected_table = String::from(
+            "
+| Source | Number | Description | 
+| ----- | ----- | ----- | 
+| Cat Purrs | 10 | A measure of the number of times my cat purred | 
+| Dog Woofs | 25 | A measure of the number of times my dog woofed | 
+| Fish Zooms | 3 | A measure of the number of times my fish zoomed | 
+
+",
+        );
+
+        assert_eq!(table, expected_table);
+    }
+
+    #[test]
+    fn test_single_table() {
+        setup().unwrap();
+
+        let date = Local::today().naive_local();
+        let words = vec![
+            "cat_purrs,Change,Quarterly",
+            "cat_purrs,Change,Weekly",
+            "dog_woofs,Change,Yearly",
+            "fish_zooms,AvgFreq,Daily",
+        ];
+
+        let table = make_single_table(words, &date).unwrap();
+        let expected_table = String::from(
+            "
+| Calculation | Frequency | Value | 
+| --- | --- | --- | 
+| Change | Quarterly | 233.3% |
+| Change | Weekly | 25.0% |
+| Change | Yearly | 733.3% |
+| AvgFreq | Daily | 0.4 |
+",
+        );
+
+        assert_eq!(table, expected_table);
+    }
 }
