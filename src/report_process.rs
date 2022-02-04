@@ -68,7 +68,7 @@ fn pre_process(chapter: &mut Chapter, cfg: Option<&Map<String, Value>>) -> BoxRe
             r"(?x)  # Ignore whitespace
         (?:\{\{\#)  # {{#
         ([^\s]*)\s  # Keyword
-        (.+)        # Capture one or more of anything
+        (.+?)        # Capture one or more of anything
         (?:\}\})    # }}
         "
         )
@@ -184,6 +184,7 @@ fn make_single_table(words: Vec<&str>, date: &NaiveDate) -> BoxResult<String> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use crate::{Point, TimeSpan};
 

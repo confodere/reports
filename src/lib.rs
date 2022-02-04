@@ -11,6 +11,8 @@ pub use crate::time_span::{TimeFrequency, TimeSpan, TimeSpanIter};
 mod report_process;
 pub use crate::report_process::*;
 
+pub mod parser;
+
 const DATABASE_FILE: &str = "ignore/data.db";
 
 const READ_DATA: &str = r#"
