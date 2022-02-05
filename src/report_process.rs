@@ -1,12 +1,15 @@
+use anyhow::Result;
 use chrono::{Local, NaiveDate};
 use lazy_static::lazy_static;
 use mdbook::book::{BookItem, Chapter};
 use mdbook::preprocess::Preprocessor;
 use regex::Regex;
+use std::collections::HashMap;
 use std::error::Error;
 use toml::{map::Map, value::Value};
 
-use crate::{Data, Figure, Metric, RenderContext, TimeFrequency};
+use crate::parser::parse_long_text;
+use crate::{parser::find_blocks, Data, Figure, Metric, RenderContext, TimeFrequency};
 
 type BoxResult<T> = Result<T, Box<dyn Error>>;
 
@@ -37,11 +40,15 @@ impl Preprocessor for Processor {
         } else {
             None
         };
+        let date = cfg_date(app_cfg)?;
 
         book.for_each_mut(|section| {
             if let BookItem::Chapter(ref mut ch) = *section {
                 if let Err(e) = pre_process(ch, app_cfg) {
                     eprintln!("report_process error: {:?}", e);
+                }
+                if let Err(e) = pre_process_blocks(ch, &date) {
+                    eprintln!("report_process block error: {:?}", e);
                 }
                 ch.content.push_str("\n ### An addition \n \n Love it");
             }
@@ -55,10 +62,61 @@ impl Preprocessor for Processor {
     }
 }
 
-struct Substitutions {
-    start: usize,
-    end: usize,
-    text: String,
+fn pre_process_blocks(chapter: &mut Chapter, date: &NaiveDate) -> Result<()> {
+    let blocks = if let Some(blocks) = find_blocks(&chapter.content)? {
+        blocks
+    } else {
+        return Ok(());
+    };
+
+    let mut sub_blocks: Vec<Substitutions> = vec![];
+    for block in blocks {
+        let mut metric = block.to_metric(date)?;
+        let vars = [
+            ("fig", metric.render(RenderContext::Words)),
+            ("prev", (&metric.data.span - metric.frequency).to_string()),
+        ];
+        let vars: HashMap<_, _> = vars.into_iter().collect();
+        let subs = parse_long_text(metric.long_text.as_str(), &vars)?;
+
+        // Replace the variables inside each metric's description
+        Substitutions::substitutions(subs, &mut metric.long_text);
+
+        // Prepare to replace the block from the template with the entire rendered metric
+        sub_blocks.push(Substitutions {
+            start: block.start,
+            end: block.end,
+            text: metric.long_text,
+        });
+    }
+    Substitutions::substitutions(sub_blocks, &mut chapter.content);
+
+    Ok(())
+}
+
+pub struct Substitutions {
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+}
+
+impl Substitutions {
+    fn substitute(&self, text: &mut String, added: &mut i32) {
+        let prev_len = text.len();
+
+        text.replace_range(
+            (self.start as i32 + *added) as usize..(self.end as i32 + *added) as usize,
+            &self.text,
+        );
+        *added += text.len() as i32 - prev_len as i32;
+    }
+
+    fn substitutions(subs: Vec<Substitutions>, text: &mut String) {
+        let mut added = 0;
+        for sub in subs {
+            sub.substitute(text, &mut added)
+        }
+    }
 }
 
 fn pre_process(chapter: &mut Chapter, cfg: Option<&Map<String, Value>>) -> BoxResult<()> {
@@ -117,7 +175,7 @@ fn cfg_now() -> NaiveDate {
     Local::today().naive_local()
 }
 
-fn cfg_date(cfg: Option<&Map<String, Value>>) -> BoxResult<NaiveDate> {
+fn cfg_date(cfg: Option<&Map<String, Value>>) -> Result<NaiveDate> {
     Ok(if let Some(cfg) = cfg {
         if let Some(date) = cfg.get("date") {
             if let Some(date) = date.as_str() {
@@ -319,5 +377,30 @@ mod tests {
         );
 
         assert_eq!(table, expected_table);
+    }
+
+    #[test]
+    fn test_pre_process_blocks() {
+        let mut ch = Chapter::new(
+            "test",
+            "
+        {{Change cat_purrs Weekly}}Weekly change in cat purrs was {{fig}}.{{/Change}}
+        {{Change cat_purrs Quarterly}}Quarterly change in cat purrs was {{fig}} compared to {{prev}}.{{/Change}}
+        "
+            .to_string(),
+            "test.md",
+            vec![],
+        );
+
+        let date = Local::today().naive_local();
+
+        assert_eq!(pre_process_blocks(&mut ch, &date).unwrap(), ());
+        assert_eq!(
+            ch.content,
+            "
+        Weekly change in cat purrs was up 25.0%.
+        Quarterly change in cat purrs was up 233.3% compared to 2021 (31st October to 6th November).
+        "
+        );
     }
 }

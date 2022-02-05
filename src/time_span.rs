@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Result};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use chronoutil::{delta, RelativeDuration};
 use rusqlite::ToSql;
@@ -235,14 +236,14 @@ pub enum TimeFrequency {
 }
 
 impl TimeFrequency {
-    pub fn from_str(variant: String) -> Result<TimeFrequency, &'static str> {
+    pub fn from_str(variant: String) -> Result<TimeFrequency> {
         Ok(match variant.as_str() {
             "Yearly" => TimeFrequency::Yearly,
             "Quarterly" => TimeFrequency::Quarterly,
             "Monthly" => TimeFrequency::Monthly,
             "Weekly" => TimeFrequency::Weekly,
             "Daily" => TimeFrequency::Daily,
-            _ => return Err("Read TimeFrequency not found"),
+            _ => return Err(anyhow!("Read TimeFrequency not found: {}", variant)),
         })
     }
 }

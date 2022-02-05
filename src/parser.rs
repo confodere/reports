@@ -1,3 +1,6 @@
+use crate::{Data, Metric, Substitutions, TimeFrequency};
+use anyhow::{anyhow, Result};
+use chrono::NaiveDate;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_until},
@@ -7,6 +10,7 @@ use nom::{
     sequence::{preceded, terminated, tuple},
     Err, FindSubstring, IResult, InputLength, Parser,
 };
+use std::collections::HashMap;
 
 /// Opening tag for a block element
 fn opening(i: &str) -> IResult<&str, (&str, &str, &str)> {
@@ -42,9 +46,9 @@ fn tag_block(i: &str) -> IResult<&str, (&str, &str, &str)> {
 
 /// Finds the earliest occurance of any keywords and calls take until that occurance
 /// meant to allow skipping over junk when parsing by taking until the next key element
-pub fn either(i: &str) -> IResult<&str, &str> {
+pub fn either<'a>(i: &'a str, keywords: Vec<&str>) -> IResult<&'a str, &'a str> {
     let mut first: Option<usize> = None;
-    for opt in ["Change", "AvgFreq"] {
+    for opt in keywords {
         if let Some(num) = i.find_substring(&format!("{{{{{}", opt)[..]) {
             first = Some(match first {
                 Some(first) if first < num => first,
@@ -64,10 +68,58 @@ pub fn either(i: &str) -> IResult<&str, &str> {
     }
 }
 
-pub fn find_blocks(i: &str) -> IResult<&str, Vec<Block>> {
+fn either_block(i: &str) -> IResult<&str, &str> {
+    either(i, vec!["Change", "AvgFreq"])
+}
+
+fn either_long_text(i: &str) -> IResult<&str, &str> {
+    either(i, vec!["fig", "prev"])
+}
+
+pub fn parse_long_text<'a>(i: &str, f: &'a HashMap<&str, String>) -> Result<Vec<Substitutions>> {
+    let (i, junk) =
+        either_long_text(i).map_err(|e| e.map(|e| Error::new(e.input.to_string(), e.code)))?;
+
+    let (_, found) = alternate(
+        either_long_text,
+        tuple((
+            tag("{{"),
+            alt((tag("fig"), tag("prev"))).map(|v: &str| {
+                f.get(v)
+                    .ok_or(anyhow!("Unknown variable in long_text: {}", v))
+            }),
+            tag("}}"),
+        )),
+    )(i)
+    .map_err(|e| e.map(|e| Error::new(e.input.to_string(), e.code)))?;
+
+    let mut subs: Vec<Substitutions> = Vec::new();
+    for ((_, replacement, _), start, end) in found {
+        match replacement {
+            Ok(text) => subs.push(Substitutions {
+                text: text.clone(),
+                start: start + junk.len(),
+                end: end + junk.len(),
+            }),
+            Err(e) => return Err(e),
+        }
+    }
+
+    Ok(subs)
+}
+
+pub fn find_blocks(i: &str) -> Result<Option<Vec<Block>>> {
     // Initial either is to remove any preceding junk
-    let (i, initial_junk) = either(i)?;
-    let (residual, block_tups) = alternate(either, tag_block)(i)?;
+    let (i, initial_junk) = match either_block(i) {
+        Ok(i) => i,
+        Err(Err::Error(_)) => return Ok(None),
+        Err(e) => return Err((e.map(|e| Error::new(e.input.to_string(), e.code))).into()),
+    };
+    let block_tups = match alternate(either_block, tag_block)(i) {
+        Ok((_, blocks)) => blocks,
+        Err(Err::Error(e)) => return Err(Error::new(e.to_string(), e.code).into()),
+        Err(e) => return Err((e.map(|e| Error::new(e.input.to_string(), e.code))).into()),
+    };
 
     let padding = initial_junk.len();
     let mut blocks: Vec<Block> = Vec::new();
@@ -81,7 +133,7 @@ pub fn find_blocks(i: &str) -> IResult<&str, Vec<Block>> {
         });
     }
 
-    Ok((residual, blocks))
+    Ok(Some(blocks))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -101,6 +153,28 @@ impl Default for Block<'_> {
             template: "Weekly change was {{fig}}.",
             start: 0,
             end: 54,
+        }
+    }
+}
+
+impl Block<'_> {
+    pub fn to_metric(&self, date: &NaiveDate) -> Result<Metric> {
+        let vars = self.vars.split_whitespace().collect::<Vec<&str>>();
+        if let [data_name, frequency] = &vars[..] {
+            let frequency = TimeFrequency::from_str(frequency.to_string())?;
+            let data = Data::read(&data_name.to_string(), date)?;
+
+            Ok(Metric::new(
+                data,
+                self.template.to_string(),
+                frequency,
+                self.keyword.to_string(),
+            ))
+        } else {
+            Err(anyhow!(
+                "Block attribute error with attributes: {:#?}",
+                vars
+            ))
         }
     }
 }
@@ -193,41 +267,37 @@ mod tests {
     #[test]
     fn test_either() {
         assert_eq!(
-            either("junk {{Change}} junk rand {{AvgFreq}}"),
+            either_block("junk {{Change}} junk rand {{AvgFreq}}"),
             Ok(("{{Change}} junk rand {{AvgFreq}}", "junk "))
         );
     }
 
     #[test]
-    fn test_nom2() {
+    fn test_find_blocks() {
         assert_eq!(
-            find_blocks("{{Change Weekly}}Weekly change was {{fig}}.{{/Change}}"),
-            Ok((
-                "",
-                vec![Block {
-                    ..Default::default()
-                }]
-            ))
+            find_blocks("{{Change Weekly}}Weekly change was {{fig}}.{{/Change}}").unwrap(),
+            Some(vec![Block {
+                ..Default::default()
+            }])
         );
 
         assert_eq!(
-            find_blocks("{{Change Weekly}}Weekly change was {{fig}}.{{/Change}} junk {{Change Daily}}Daily change of {{fig}}.{{/Change}} more junk {{AvgFreq Monthly}} compared to last month where {{fig}} was observed.{{/AvgFreq}} final junk"),
-            Ok((" final junk", vec![
+            find_blocks("{{Change Weekly}}Weekly change was {{fig}}.{{/Change}} junk {{Change Daily}}Daily change of {{fig}}.{{/Change}} more junk {{AvgFreq Monthly}} compared to last month where {{fig}} was observed.{{/AvgFreq}} final junk").unwrap(),
+            Some(vec![
                 Block {..Default::default()}, Block { vars: "Daily", template: "Daily change of {{fig}}.", start: 60, end: 111, ..Default::default()}, Block { keyword: "AvgFreq", vars: "Monthly", template: " compared to last month where {{fig}} was observed.", start: 122, end: 204}
-            ])));
+            ]));
 
         assert_eq!(
-            find_blocks("junk {{Change}}{{/Change}}"),
-            Ok((
-                "",
-                vec![Block {
-                    vars: "",
-                    template: "",
-                    start: 5,
-                    end: 26,
-                    ..Default::default()
-                }]
-            ))
+            find_blocks("junk {{Change}}{{/Change}}").unwrap(),
+            Some(vec![Block {
+                vars: "",
+                template: "",
+                start: 5,
+                end: 26,
+                ..Default::default()
+            }])
         );
+
+        assert_eq!(find_blocks("just just").unwrap(), None);
     }
 }

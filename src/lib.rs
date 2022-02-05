@@ -151,7 +151,6 @@ pub trait Figure {
             .collect::<Result<Vec<_>, _>>()
     }
 }
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Change {
     old: f64,
