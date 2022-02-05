@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use core::fmt;
 use serde::{Deserialize, Serialize};
@@ -124,6 +125,26 @@ impl Metric {
                 .render(ctx),
             _ => panic!("Unidentified figure type"),
         }
+    }
+
+    pub fn get_string(&self, name: &str, ctx: RenderContext) -> Result<String> {
+        Ok(match name {
+            "fig" => self.render(ctx),
+            "prev" => (&self.data.span - self.frequency).to_string(),
+            "freq" => self.frequency.to_string(),
+            "calc" => self.calculation_type.clone(),
+            "name" => self.data.name.clone(),
+            "Name" => self.data.long_name.clone(),
+            "desc" => {
+                if let Some(desc) = self.data.description.clone() {
+                    desc
+                } else {
+                    "-".to_string()
+                }
+            }
+            "span" => self.data.span.to_string(),
+            _ => return Err(anyhow!("{} is not a recognised variable for Metric", name)),
+        })
     }
 }
 
@@ -380,13 +401,14 @@ impl Data {
         let mut stmt = conn.prepare(READ_DATA)?;
 
         stmt.query_row(params![name], |row| {
+            let freq: String = row.get(3)?;
             Ok(Data {
                 name: row.get(0)?,
                 long_name: row.get(1)?,
                 description: row.get(2)?,
                 span: TimeSpan::new(
                     date,
-                    TimeFrequency::from_str(row.get(3)?)
+                    freq.parse::<TimeFrequency>()
                         .expect("Couldn't match TimeFrequency read from database"),
                 ),
             })
@@ -405,13 +427,14 @@ impl Data {
         )?;
 
         let data = data_stmt.query_row(params![name], |row| {
+            let freq: String = row.get(3)?;
             Ok(Data {
                 name: row.get(0)?,
                 long_name: row.get(1)?,
                 description: row.get(2)?,
                 span: TimeSpan::new(
                     date,
-                    TimeFrequency::from_str(row.get(3)?)
+                    freq.parse::<TimeFrequency>()
                         .expect("Couldn't match TimeFrequency read from database"),
                 ),
             })
@@ -427,10 +450,12 @@ impl Data {
 
         let metrics = metric_stmt
             .query_and_then(params![name], |row| -> Result<_, rusqlite::Error> {
+                let freq: String = row.get(1)?;
+
                 Ok(Metric::new(
                     data.clone(),
                     row.get(0)?,
-                    TimeFrequency::from_str(row.get(1)?)
+                    freq.parse::<TimeFrequency>()
                         .expect("Couldn't match TimeFrequency read from database"),
                     row.get(2)?,
                 ))

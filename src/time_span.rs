@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::{Add, Div, Sub};
+use std::str::FromStr;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Copy)]
 pub struct TimeSpan {
@@ -235,19 +236,6 @@ pub enum TimeFrequency {
     Daily = 14,
 }
 
-impl TimeFrequency {
-    pub fn from_str(variant: String) -> Result<TimeFrequency> {
-        Ok(match variant.as_str() {
-            "Yearly" => TimeFrequency::Yearly,
-            "Quarterly" => TimeFrequency::Quarterly,
-            "Monthly" => TimeFrequency::Monthly,
-            "Weekly" => TimeFrequency::Weekly,
-            "Daily" => TimeFrequency::Daily,
-            _ => return Err(anyhow!("Read TimeFrequency not found: {}", variant)),
-        })
-    }
-}
-
 impl ToSql for TimeFrequency {
     fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
         Ok(format!("{:#?}", self).into())
@@ -257,6 +245,20 @@ impl ToSql for TimeFrequency {
 impl fmt::Display for TimeFrequency {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:#?}", self)
+    }
+}
+
+impl FromStr for TimeFrequency {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Yearly" => Ok(TimeFrequency::Yearly),
+            "Quarterly" => Ok(TimeFrequency::Quarterly),
+            "Monthly" => Ok(TimeFrequency::Monthly),
+            "Weekly" => Ok(TimeFrequency::Weekly),
+            "Daily" => Ok(TimeFrequency::Daily),
+            _ => Err(anyhow!("{} not a valid TimeFrequency", s)),
+        }
     }
 }
 

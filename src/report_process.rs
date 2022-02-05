@@ -4,7 +4,6 @@ use lazy_static::lazy_static;
 use mdbook::book::{BookItem, Chapter};
 use mdbook::preprocess::Preprocessor;
 use regex::Regex;
-use std::collections::HashMap;
 use std::error::Error;
 use toml::{map::Map, value::Value};
 
@@ -72,12 +71,8 @@ fn pre_process_blocks(chapter: &mut Chapter, date: &NaiveDate) -> Result<()> {
     let mut sub_blocks: Vec<Substitutions> = vec![];
     for block in blocks {
         let mut metric = block.to_metric(date)?;
-        let vars = [
-            ("fig", metric.render(RenderContext::Words)),
-            ("prev", (&metric.data.span - metric.frequency).to_string()),
-        ];
-        let vars: HashMap<_, _> = vars.into_iter().collect();
-        let subs = parse_long_text(metric.long_text.as_str(), &vars)?;
+
+        let subs = parse_long_text(metric.long_text.as_str(), &metric)?;
 
         // Replace the variables inside each metric's description
         Substitutions::substitutions(subs, &mut metric.long_text);
@@ -222,7 +217,7 @@ fn make_single_table(words: Vec<&str>, date: &NaiveDate) -> BoxResult<String> {
     for word in words {
         let words = word.split(",").collect::<Vec<&str>>();
         if let [name, calc, freq] = &words[..] {
-            let freq_obj = TimeFrequency::from_str(freq.to_string())?;
+            let freq_obj = freq.parse::<TimeFrequency>()?;
             //let rc = RenderContext::from_str(rc).unwrap_or(RenderContext::Numbers);
             let metric = Metric::read(name.to_string(), &date, calc.to_string(), freq_obj)?;
 
@@ -401,6 +396,42 @@ mod tests {
         Weekly change in cat purrs was up 25.0%.
         Quarterly change in cat purrs was up 233.3% compared to 2021 (31st October to 6th November).
         "
+        );
+    }
+
+    #[test]
+    fn test_block_vars() {
+        let mut ch = Chapter::new(
+            "test",
+            "{{AvgFreq fish_zooms Daily}}
+            {{fig}}
+            {{prev}}
+            {{freq}}
+            {{calc}}
+            {{name}}
+            {{Name}}
+            {{desc}}
+            {{span}}
+            {{/AvgFreq}}"
+                .to_string(),
+            "test.md",
+            vec![],
+        );
+        let date = Local::today().naive_local();
+
+        assert_eq!(pre_process_blocks(&mut ch, &date).unwrap(), ());
+        assert_eq!(
+            ch.content,
+            "
+            0.4 per day
+            2022 (30th January to 5th February)
+            Daily
+            AvgFreq
+            fish_zooms
+            Fish Zooms
+            A measure of the number of times my fish zoomed
+            2022 (31st January to 6th February)
+            "
         );
     }
 }

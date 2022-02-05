@@ -1,4 +1,4 @@
-use crate::{Data, Metric, Substitutions, TimeFrequency};
+use crate::{Data, Metric, RenderContext, Substitutions, TimeFrequency};
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use nom::{
@@ -10,7 +10,6 @@ use nom::{
     sequence::{preceded, terminated, tuple},
     Err, FindSubstring, IResult, InputLength, Parser,
 };
-use std::collections::HashMap;
 
 /// Opening tag for a block element
 fn opening(i: &str) -> IResult<&str, (&str, &str, &str)> {
@@ -68,15 +67,20 @@ pub fn either<'a>(i: &'a str, keywords: Vec<&str>) -> IResult<&'a str, &'a str> 
     }
 }
 
-fn either_block(i: &str) -> IResult<&str, &str> {
+pub fn either_block(i: &str) -> IResult<&str, &str> {
     either(i, vec!["Change", "AvgFreq"])
 }
 
-fn either_long_text(i: &str) -> IResult<&str, &str> {
-    either(i, vec!["fig", "prev"])
+pub fn either_long_text(i: &str) -> IResult<&str, &str> {
+    either(
+        i,
+        vec![
+            "fig", "prev", "freq", "calc", "name", "Name", "desc", "span",
+        ],
+    )
 }
 
-pub fn parse_long_text<'a>(i: &str, f: &'a HashMap<&str, String>) -> Result<Vec<Substitutions>> {
+pub fn parse_long_text<'a>(i: &str, f: &'a Metric) -> Result<Vec<Substitutions>> {
     let (i, junk) =
         either_long_text(i).map_err(|e| e.map(|e| Error::new(e.input.to_string(), e.code)))?;
 
@@ -84,10 +88,17 @@ pub fn parse_long_text<'a>(i: &str, f: &'a HashMap<&str, String>) -> Result<Vec<
         either_long_text,
         tuple((
             tag("{{"),
-            alt((tag("fig"), tag("prev"))).map(|v: &str| {
-                f.get(v)
-                    .ok_or(anyhow!("Unknown variable in long_text: {}", v))
-            }),
+            alt((
+                tag("fig"),
+                tag("prev"),
+                tag("freq"),
+                tag("calc"),
+                tag("name"),
+                tag("Name"),
+                tag("desc"),
+                tag("span"),
+            ))
+            .map(|v: &str| f.get_string(v, RenderContext::Words)),
             tag("}}"),
         )),
     )(i)
@@ -136,6 +147,8 @@ pub fn find_blocks(i: &str) -> Result<Option<Vec<Block>>> {
     Ok(Some(blocks))
 }
 
+/// Represents a parsed block that can be used to construct a Metric,
+/// and tracks where in a string the block originally came from.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Block<'a> {
     pub keyword: &'a str,
@@ -161,7 +174,7 @@ impl Block<'_> {
     pub fn to_metric(&self, date: &NaiveDate) -> Result<Metric> {
         let vars = self.vars.split_whitespace().collect::<Vec<&str>>();
         if let [data_name, frequency] = &vars[..] {
-            let frequency = TimeFrequency::from_str(frequency.to_string())?;
+            let frequency = frequency.parse::<TimeFrequency>()?;
             let data = Data::read(&data_name.to_string(), date)?;
 
             Ok(Metric::new(
@@ -190,12 +203,12 @@ impl Block<'_> {
 /// * `f` Parses the elements
 ///
 /// ```rust
-/// use reports::parser::{alternate, either};
+/// use reports::parser::{alternate, either_block};
 /// use nom::{Err, error::ErrorKind, Needed, IResult};
 /// use nom::bytes::complete::tag;
 ///
 /// fn parser(s: &str) -> IResult<&str, Vec<(&str, usize, usize)>> {
-///     alternate(either, tag("{{Change}}"))(s)
+///     alternate(either_block, tag("{{Change}}"))(s)
 /// }
 ///
 /// assert_eq!(parser("{{Change}}junk{{Change}}more junk{{Change}}"), Ok(("", vec![("{{Change}}",0, 10), ("{{Change}}", 14, 24), ("{{Change}}", 33, 43)])));
