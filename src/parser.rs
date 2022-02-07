@@ -1,46 +1,41 @@
-use crate::{Data, Metric, RenderContext, Substitutions, TimeFrequency};
+use std::str::FromStr;
+
+use crate::{AvgFreq, Change, Data, DisplayType, Figure, Metric, TimeFrequency};
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use nom::{
-    branch::alt,
     bytes::complete::{tag, take, take_until},
     character::complete::multispace0,
+    combinator::opt,
     error::Error,
     error::{ErrorKind, ParseError},
-    sequence::{preceded, terminated, tuple},
+    multi::separated_list0,
+    sequence::{pair, terminated, tuple},
     Err, FindSubstring, IResult, InputLength, Parser,
 };
+use std::iter;
 
 /// Opening tag for a block element
-fn opening(i: &str) -> IResult<&str, (&str, &str, &str)> {
-    tuple((
-        preceded(
-            tag("{{"),
-            // terminated removes the space after the keyword
-            terminated(alt((tag("Change"), tag("AvgFreq"))), multispace0),
-        ),
-        take_until("}}"),
-        tag("}}"),
-    ))(i)
+fn opening(i: &str) -> IResult<&str, (&str, Option<&str>, &str, &str)> {
+    tuple((tag("{{#"), opt(multispace0), take_until("}}"), tag("}}")))(i)
 }
 
 /// Closing tag for a block element
-fn ending<'a>(i: &'a str, clause: &str) -> IResult<&'a str, &'a str> {
-    terminated(take_until(clause), tag(clause))(i)
+fn ending(i: &str) -> IResult<&str, &str> {
+    terminated(take_until("{{/#}}"), tag("{{/#}}"))(i)
 }
 
 /// Block constructor nom parser
-fn tag_block(i: &str) -> IResult<&str, (&str, &str, &str)> {
-    let (remainder, (clause, args, _)) = opening(i)?;
-    let closing_clause = match clause {
-        "Change" => "{{/Change}}",
-        "AvgFreq" => "{{/AvgFreq}}",
-        _ => {
-            panic!("Nom construction of invalid return clause")
-        }
-    };
-    let (remainder, block) = ending(remainder, closing_clause)?;
-    Ok((remainder, (clause, args, block)))
+fn tag_block(i: &str) -> IResult<&str, (&str, &str)> {
+    let (remainder, (_, _, args, _)) = opening(i)?;
+    let (remainder, template) = ending(remainder)?;
+    Ok((remainder, (args, template)))
+}
+
+fn tag_exp(i: &str) -> IResult<&str, (&str, &str)> {
+    let (remainder, (_, _, args, junk)) =
+        tuple((tag("{{"), opt(multispace0), take_until("}}"), tag("}}")))(i)?;
+    Ok((remainder, (args, junk)))
 }
 
 /// Finds the earliest occurance of any keywords and calls take until that occurance
@@ -48,7 +43,7 @@ fn tag_block(i: &str) -> IResult<&str, (&str, &str, &str)> {
 pub fn either<'a>(i: &'a str, keywords: Vec<&str>) -> IResult<&'a str, &'a str> {
     let mut first: Option<usize> = None;
     for opt in keywords {
-        if let Some(num) = i.find_substring(&format!("{{{{{}", opt)[..]) {
+        if let Some(num) = i.find_substring(opt) {
             first = Some(match first {
                 Some(first) if first < num => first,
                 _ => num,
@@ -63,12 +58,16 @@ pub fn either<'a>(i: &'a str, keywords: Vec<&str>) -> IResult<&'a str, &'a str> 
             take(first)(i)
         }
     } else {
-        Err(nom::Err::Error(Error::new("Ran out", ErrorKind::Eof)))
+        Ok(("", i))
     }
 }
 
 pub fn either_block(i: &str) -> IResult<&str, &str> {
-    either(i, vec!["Change", "AvgFreq"])
+    take_until("{{#")(i)
+}
+
+pub fn either_exp(i: &str) -> IResult<&str, &str> {
+    either(i, vec![" ", "}}"])
 }
 
 pub fn either_long_text(i: &str) -> IResult<&str, &str> {
@@ -80,90 +79,74 @@ pub fn either_long_text(i: &str) -> IResult<&str, &str> {
     )
 }
 
-pub fn parse_long_text<'a>(i: &str, f: &'a Metric) -> Result<Vec<Substitutions>> {
-    let (i, junk) =
-        either_long_text(i).map_err(|e| e.map(|e| Error::new(e.input.to_string(), e.code)))?;
-
-    let (_, found) = alternate(
-        either_long_text,
-        tuple((
-            tag("{{"),
-            alt((
-                tag("fig"),
-                tag("prev"),
-                tag("freq"),
-                tag("calc"),
-                tag("name"),
-                tag("Name"),
-                tag("desc"),
-                tag("span"),
-            ))
-            .map(|v: &str| f.get_string(v, RenderContext::Words)),
-            tag("}}"),
-        )),
-    )(i)
-    .map_err(|e| e.map(|e| Error::new(e.input.to_string(), e.code)))?;
-
-    let mut subs: Vec<Substitutions> = Vec::new();
-    for ((_, replacement, _), start, end) in found {
-        match replacement {
-            Ok(text) => subs.push(Substitutions {
-                text: text.clone(),
-                start: start + junk.len(),
-                end: end + junk.len(),
-            }),
-            Err(e) => return Err(e),
-        }
+pub fn find_blocks<'a>(
+    i: &'a str,
+) -> Result<Option<(&'a str, (&'a str, Vec<((&'a str, &'a str), usize, usize)>))>> {
+    match pair(take_until("{{#"), alternate(take_until("{{#"), tag_block))(i) {
+        Ok(i) => Ok(Some(i)),
+        Err(Err::Error(_)) => Ok(None),
+        Err(e) => Err(e.map(|e| Error::new(e.input.to_string(), e.code)).into()),
     }
-
-    Ok(subs)
 }
 
-pub fn find_blocks(i: &str) -> Result<Option<Vec<Block>>> {
-    // Initial either is to remove any preceding junk
-    let (i, initial_junk) = match either_block(i) {
-        Ok(i) => i,
-        Err(Err::Error(_)) => return Ok(None),
-        Err(e) => return Err((e.map(|e| Error::new(e.input.to_string(), e.code))).into()),
-    };
-    let block_tups = match alternate(either_block, tag_block)(i) {
-        Ok((_, blocks)) => blocks,
-        Err(Err::Error(e)) => return Err(Error::new(e.to_string(), e.code).into()),
-        Err(e) => return Err((e.map(|e| Error::new(e.input.to_string(), e.code))).into()),
-    };
-
-    let padding = initial_junk.len();
-    let mut blocks: Vec<Block> = Vec::new();
-    for ((keyword, vars, template), start, end) in block_tups {
-        blocks.push(Block {
-            keyword,
-            vars,
-            template,
-            start: start + padding,
-            end: end + padding,
-        });
+pub fn find_expressions<'a>(
+    i: &'a str,
+) -> Result<Option<(&'a str, (&'a str, Vec<((&'a str, &'a str), usize, usize)>))>> {
+    match pair(take_until("{{"), alternate(take_until("{{"), tag_exp))(i) {
+        Ok(i) => Ok(Some(i)),
+        Err(Err::Error(_)) => Ok(None),
+        Err(e) => Err(e.map(|e| Error::new(e.input.to_string(), e.code)).into()),
     }
+}
 
-    Ok(Some(blocks))
+fn var_list(i: &str) -> IResult<&str, Vec<&str>> {
+    separated_list0(tag(" "), either_exp)(i)
+}
+
+pub fn key_var_list(i: &str) -> Result<(&str, Vec<&str>)> {
+    match var_list(i) {
+        Ok((_, mut i)) => {
+            if i.len() > 0 {
+                Ok((i.remove(0), i))
+            } else {
+                Err(anyhow!("{{{{#Block}}}} missing an identifier"))
+            }
+        }
+        Err(e) => Err(e.map(|e| Error::new(e.input.to_string(), e.code)).into()),
+    }
 }
 
 /// Represents a parsed block that can be used to construct a Metric,
 /// and tracks where in a string the block originally came from.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Block<'a> {
-    pub keyword: &'a str,
-    pub vars: &'a str,
-    pub template: &'a str,
+    pub block_name: &'a str,
+    pub vars: Vec<&'a str>,
+    pub template: String,
     pub start: usize,
     pub end: usize,
+}
+
+impl Substitute for Block<'_> {
+    fn start(&self) -> usize {
+        self.start
+    }
+
+    fn end(&self) -> usize {
+        self.end
+    }
+
+    fn text(&self) -> Result<String> {
+        Ok(self.template.clone())
+    }
 }
 
 impl Default for Block<'_> {
     fn default() -> Self {
         Self {
-            keyword: "Change",
-            vars: "Weekly",
-            template: "Weekly change was {{fig}}.",
+            block_name: "Change",
+            vars: vec!["Weekly"],
+            template: "Weekly change was {{fig}}.".to_string(),
             start: 0,
             end: 54,
         }
@@ -172,8 +155,7 @@ impl Default for Block<'_> {
 
 impl Block<'_> {
     pub fn to_metric(&self, date: &NaiveDate) -> Result<Metric> {
-        let vars = self.vars.split_whitespace().collect::<Vec<&str>>();
-        if let [data_name, frequency] = &vars[..] {
+        if let [data_name, frequency] = &self.vars[..] {
             let frequency = frequency.parse::<TimeFrequency>()?;
             let data = Data::read(&data_name.to_string(), date)?;
 
@@ -181,14 +163,206 @@ impl Block<'_> {
                 data,
                 self.template.to_string(),
                 frequency,
-                self.keyword.to_string(),
+                self.block_name.to_string(),
             ))
         } else {
             Err(anyhow!(
                 "Block attribute error with attributes: {:#?}",
-                vars
+                self.vars
             ))
         }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SimpleExpression {
+    pub keyword: String,
+}
+
+impl SimpleExpression {
+    fn to_substitution_content(&self, data: &Data) -> Result<String> {
+        data.get_string(self.keyword.clone())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct FigureExpression {
+    pub calculation_type: String,
+    pub frequency: TimeFrequency,
+    pub context: Option<DisplayType>,
+}
+
+impl FigureExpression {
+    fn to_substitution_content(&self, data: &Data) -> Result<String> {
+        match self.calculation_type.as_str() {
+            "Change" => Ok(Change::from_figure_expresssion(&self, data)?.render(
+                if let Some(ctx) = self.context {
+                    ctx
+                } else {
+                    DisplayType::DescribedPercentage
+                },
+            )),
+            "AvgFreq" => Ok(AvgFreq::from_figure_expresssion(&self, data)?.render(
+                if let Some(ctx) = self.context {
+                    ctx
+                } else {
+                    DisplayType::DescribedRounded
+                },
+            )),
+            _ => {
+                return Err(anyhow!(
+                    "Invalid calculation_type: {}",
+                    self.calculation_type
+                ))
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ExpressionType {
+    Simple(SimpleExpression),
+    Figure(FigureExpression),
+    Prev(TimeFrequency),
+}
+
+impl Default for ExpressionType {
+    fn default() -> Self {
+        ExpressionType::Simple(SimpleExpression {
+            ..Default::default()
+        })
+    }
+}
+
+fn match_vars<'a>(
+    vars: impl Iterator<Item = &'a str>,
+) -> Result<(Option<&'a str>, Option<TimeFrequency>, Option<DisplayType>)> {
+    let (mut calculation_type, mut frequency, mut context) = (None, None, None);
+    for v in vars {
+        match v {
+            "Change" | "AvgFreq" => calculation_type = Some(v),
+            "Yearly" | "Quarterly" | "Monthly" | "Weekly" | "Daily" => {
+                frequency = Some(v.parse::<TimeFrequency>()?)
+            }
+            "Rounded" | "Percentage" | "DescribedPercentage" => {
+                context = Some(v.parse::<DisplayType>()?)
+            }
+            _ => return Err(anyhow!("Couldn't match variable: {}", v)),
+        }
+    }
+    Ok((calculation_type, frequency, context))
+}
+
+impl FromStr for ExpressionType {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (keyword, vars) = key_var_list(s)?;
+        let exp = match keyword {
+            "fig" | "name" | "Name" | "desc" | "span" => ExpressionType::Simple(SimpleExpression {
+                keyword: keyword.to_string(),
+            }),
+            "prev" => {
+                let (_, frequency, _) = match_vars(vars.into_iter())?;
+                if let Some(frequency) = frequency {
+                    ExpressionType::Prev(frequency)
+                } else {
+                    return Err(anyhow!("Missing frequency from PrevExpression"));
+                }
+            }
+            keyword => {
+                let iter = iter::once(keyword).chain(vars.into_iter());
+                let (calculation_type, frequency, context) = match_vars(iter)?;
+
+                if let Some(calculation_type) = calculation_type {
+                    if let Some(frequency) = frequency {
+                        ExpressionType::Figure(FigureExpression {
+                            calculation_type: calculation_type.to_string(),
+                            frequency,
+                            context,
+                        })
+                    } else {
+                        return Err(anyhow!("Missing frequency from FigureExpression"));
+                    }
+                } else {
+                    return Err(anyhow!("Missing calculation_type from FigureExpression"));
+                }
+            }
+        };
+        Ok(exp)
+    }
+}
+
+#[derive(Debug)]
+pub struct Expression<'a> {
+    pub vars: ExpressionType,
+    pub start: usize,
+    pub end: usize,
+    pub data: &'a Data,
+}
+
+impl Substitute for Expression<'_> {
+    fn start(&self) -> usize {
+        self.start
+    }
+
+    fn end(&self) -> usize {
+        self.end
+    }
+
+    fn text(&self) -> Result<String> {
+        match &self.vars {
+            ExpressionType::Simple(i) => i.to_substitution_content(self.data),
+            ExpressionType::Figure(i) => i.to_substitution_content(self.data),
+            ExpressionType::Prev(freq) => Ok((&self.data.span - *freq).to_string()),
+        }
+    }
+}
+
+pub trait Substitute {
+    fn start(&self) -> usize;
+    fn end(&self) -> usize;
+    fn text(&self) -> Result<String>;
+}
+
+pub struct BasicSubstitute {
+    pub start: usize,
+    pub end: usize,
+    pub text: String,
+}
+
+impl Substitute for BasicSubstitute {
+    fn start(&self) -> usize {
+        self.start
+    }
+
+    fn end(&self) -> usize {
+        self.end
+    }
+
+    fn text(&self) -> Result<String> {
+        Ok(self.text.clone())
+    }
+}
+
+pub struct Substitution<'a> {
+    pub template: &'a mut String,
+    pub added: i32,
+}
+
+impl Substitution<'_> {
+    pub fn substitute(&mut self, sub: &impl Substitute) -> Result<()> {
+        let prev_len = self.template.len();
+
+        let (start, end) = (
+            (sub.start() as i32 + self.added) as usize,
+            (sub.end() as i32 + self.added) as usize,
+        );
+
+        self.template.replace_range(start..end, &sub.text()?);
+        self.added += self.template.len() as i32 - prev_len as i32;
+
+        Ok(())
     }
 }
 
@@ -208,11 +382,11 @@ impl Block<'_> {
 /// use nom::bytes::complete::tag;
 ///
 /// fn parser(s: &str) -> IResult<&str, Vec<(&str, usize, usize)>> {
-///     alternate(either_block, tag("{{Change}}"))(s)
+///     alternate(either_block, tag("{{#Change}}"))(s)
 /// }
 ///
-/// assert_eq!(parser("{{Change}}junk{{Change}}more junk{{Change}}"), Ok(("", vec![("{{Change}}",0, 10), ("{{Change}}", 14, 24), ("{{Change}}", 33, 43)])));
-/// assert_eq!(parser("{{Change}}junk{{Change}}more junk{{Change}}{{Change}}"), Ok(("", vec![("{{Change}}", 0, 10), ("{{Change}}", 14, 24), ("{{Change}}", 33, 43), ("{{Change}}", 43, 53)])));
+/// assert_eq!(parser("{{#Change}}junk{{/#}}"), Ok(("junk{{/#}}", vec![("{{#Change}}", 0, 11)])));
+/// assert_eq!(parser("{{#Change}}junk{{#Change}}more junk{{#Change}}{{/Change}}"), Ok(("{{/Change}}", vec![("{{#Change}}", 0, 11), ("{{#Change}}", 15, 26), ("{{#Change}}", 35, 46)])));
 /// ```
 pub fn alternate<I, O, O2, E, F, G>(
     mut sep: G,
@@ -263,8 +437,23 @@ mod tests {
     #[test]
     fn test_nom() {
         assert_eq!(
-            opening("{{Change}}|{{/Change}}"),
-            Ok(("|{{/Change}}", ("Change", "", "}}")))
+            opening("{{#Change}}|{{/}}"),
+            Ok(("|{{/}}", ("{{#", Some(""), "Change", "}}")))
+        );
+    }
+
+    #[test]
+    fn test_ending() {
+        assert_eq!(
+            ending(
+                "{{span}}
+        {{/#}}"
+            ),
+            Ok((
+                "",
+                "{{span}}
+        "
+            ))
         );
     }
 
@@ -273,42 +462,39 @@ mod tests {
     fn test_junk() {
         assert_eq!(
             tag_block("junk {{Change}}{{/Change}}"),
-            Ok(("junk {{Change}}{{/Change}}", ("", "", "")))
+            Ok(("junk {{Change}}{{/Change}}", ("", "")))
         );
     }
 
     #[test]
     fn test_either() {
         assert_eq!(
-            either_block("junk {{Change}} junk rand {{AvgFreq}}"),
-            Ok(("{{Change}} junk rand {{AvgFreq}}", "junk "))
+            either_block("junk {{#Change}} junk rand {{AvgFreq}}{{/#}}"),
+            Ok(("{{#Change}} junk rand {{AvgFreq}}{{/#}}", "junk "))
         );
+    }
+
+    #[test]
+    fn test_var_list() {
+        assert_eq!(either_exp("abc bcd dcf"), Ok((" bcd dcf", "abc")));
+        assert_eq!(var_list("abc bcd dcf"), Ok(("", vec!["abc", "bcd", "dcf"])));
     }
 
     #[test]
     fn test_find_blocks() {
         assert_eq!(
             find_blocks("{{Change Weekly}}Weekly change was {{fig}}.{{/Change}}").unwrap(),
-            Some(vec![Block {
-                ..Default::default()
-            }])
+            None
         );
 
         assert_eq!(
-            find_blocks("{{Change Weekly}}Weekly change was {{fig}}.{{/Change}} junk {{Change Daily}}Daily change of {{fig}}.{{/Change}} more junk {{AvgFreq Monthly}} compared to last month where {{fig}} was observed.{{/AvgFreq}} final junk").unwrap(),
-            Some(vec![
-                Block {..Default::default()}, Block { vars: "Daily", template: "Daily change of {{fig}}.", start: 60, end: 111, ..Default::default()}, Block { keyword: "AvgFreq", vars: "Monthly", template: " compared to last month where {{fig}} was observed.", start: 122, end: 204}
-            ]));
+            find_blocks("{{#Change Weekly}}Weekly change was {{fig}}.{{/#}} junk {{#Change Daily}}Daily change of {{fig}}.{{/Change}} more junk {{#AvgFreq}} compared to last month where {{fig}} was observed.{{/#}} final junk").unwrap(),
+            Some((" final junk", ("", vec![(("Change Weekly", "Weekly change was {{fig}}."), 0, 50), (("Change Daily", "Daily change of {{fig}}.{{/Change}} more junk {{#AvgFreq}} compared to last month where {{fig}} was observed."), 56, 188)])))
+            );
 
         assert_eq!(
-            find_blocks("junk {{Change}}{{/Change}}").unwrap(),
-            Some(vec![Block {
-                vars: "",
-                template: "",
-                start: 5,
-                end: 26,
-                ..Default::default()
-            }])
+            find_blocks("junk {{# Change}}{{/#}}").unwrap(),
+            Some(("", ("junk ", vec![(("Change", ""), 0, 18)])))
         );
 
         assert_eq!(find_blocks("just just").unwrap(), None);

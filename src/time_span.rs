@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use chrono::{Datelike, Duration, Local, NaiveDate, Weekday};
 use chronoutil::{delta, RelativeDuration};
 use rusqlite::ToSql;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,15 @@ use std::str::FromStr;
 pub struct TimeSpan {
     start_date: NaiveDate,
     frequency: TimeFrequency,
+}
+
+impl Default for TimeSpan {
+    fn default() -> Self {
+        TimeSpan {
+            start_date: Local::today().naive_local(),
+            frequency: TimeFrequency::Daily,
+        }
+    }
 }
 
 impl TimeSpan {
@@ -50,7 +59,7 @@ impl TimeSpan {
 }
 
 fn diff(span: &TimeSpan, frequency: &TimeFrequency, change: i32) -> NaiveDate {
-    match frequency {
+    let date = match frequency {
         TimeFrequency::Yearly => match span.frequency {
             TimeFrequency::Weekly => NaiveDate::from_isoywd(
                 span.start_date.year() + change,
@@ -63,7 +72,10 @@ fn diff(span: &TimeSpan, frequency: &TimeFrequency, change: i32) -> NaiveDate {
         TimeFrequency::Monthly => delta::shift_months(span.start_date, change),
         TimeFrequency::Weekly => span.start_date + Duration::days((7 * change).into()),
         TimeFrequency::Daily => span.start_date + Duration::days(change.into()),
-    }
+    };
+
+    // Adjust to be start of period that date is in
+    TimeSpan::find_start_date(&date, &span.frequency)
 }
 
 impl Add<TimeFrequency> for &TimeSpan {
@@ -112,10 +124,7 @@ impl Iterator for TimeSpanIter {
     fn next(&mut self) -> Option<Self::Item> {
         if self.count < self.depth {
             if self.count > 0 {
-                self.span.start_date = TimeSpan::find_start_date(
-                    &diff(&self.span, &self.frequency, -1),
-                    &self.span.frequency,
-                );
+                self.span.start_date = diff(&self.span, &self.frequency, -1);
             }
             self.count += 1;
             Some(self.span)
@@ -259,6 +268,12 @@ impl FromStr for TimeFrequency {
             "Daily" => Ok(TimeFrequency::Daily),
             _ => Err(anyhow!("{} not a valid TimeFrequency", s)),
         }
+    }
+}
+
+impl Default for TimeFrequency {
+    fn default() -> Self {
+        TimeFrequency::Daily
     }
 }
 

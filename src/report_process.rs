@@ -1,16 +1,13 @@
-use anyhow::Result;
+use crate::parser::{
+    find_expressions, key_var_list, BasicSubstitute, Block, Expression, ExpressionType,
+    Substitution,
+};
+use crate::{parser::find_blocks, Data, DisplayType, Figure, Metric, TimeFrequency};
+use anyhow::{anyhow, Result};
 use chrono::{Local, NaiveDate};
-use lazy_static::lazy_static;
 use mdbook::book::{BookItem, Chapter};
 use mdbook::preprocess::Preprocessor;
-use regex::Regex;
-use std::error::Error;
 use toml::{map::Map, value::Value};
-
-use crate::parser::parse_long_text;
-use crate::{parser::find_blocks, Data, Figure, Metric, RenderContext, TimeFrequency};
-
-type BoxResult<T> = Result<T, Box<dyn Error>>;
 
 pub struct Processor;
 
@@ -43,11 +40,14 @@ impl Preprocessor for Processor {
 
         book.for_each_mut(|section| {
             if let BookItem::Chapter(ref mut ch) = *section {
-                if let Err(e) = pre_process(ch, app_cfg) {
+                /*if let Err(e) = pre_process(ch, app_cfg) {
                     eprintln!("report_process error: {:?}", e);
-                }
+                }*/
                 if let Err(e) = pre_process_blocks(ch, &date) {
-                    eprintln!("report_process block error: {:?}", e);
+                    eprintln!("report_process block error: {:#?}", e);
+                }
+                if let Err(e) = pre_process_funcs(ch, &date) {
+                    eprintln!("report_process func error: {:#?}", e)
                 }
                 ch.content.push_str("\n ### An addition \n \n Love it");
             }
@@ -62,107 +62,74 @@ impl Preprocessor for Processor {
 }
 
 fn pre_process_blocks(chapter: &mut Chapter, date: &NaiveDate) -> Result<()> {
-    let blocks = if let Some(blocks) = find_blocks(&chapter.content)? {
-        blocks
-    } else {
-        return Ok(());
-    };
+    if let Some(pre_blocks) = find_blocks(&chapter.content.clone().as_str())? {
+        let mut block_sub = Substitution {
+            template: &mut chapter.content,
+            added: 0,
+        };
+        // Thrown out value is text leftover after last block
+        let (_, (padding, vars)) = pre_blocks;
 
-    let mut sub_blocks: Vec<Substitutions> = vec![];
-    for block in blocks {
-        let mut metric = block.to_metric(date)?;
+        // Each block context
+        for ((vars, template), start, end) in vars {
+            let (block_name, vars) = key_var_list(vars)?;
 
-        let subs = parse_long_text(metric.long_text.as_str(), &metric)?;
+            let mut block = Block {
+                block_name,
+                vars,
+                template: template.to_string(),
+                start: start + padding.len(),
+                end: end + padding.len(),
+            };
 
-        // Replace the variables inside each metric's description
-        Substitutions::substitutions(subs, &mut metric.long_text);
+            let data = Data::read(&block_name.to_string(), date)?;
 
-        // Prepare to replace the block from the template with the entire rendered metric
-        sub_blocks.push(Substitutions {
-            start: block.start,
-            end: block.end,
-            text: metric.long_text,
-        });
+            // Each expression
+            if let Some((_, (padding, exps))) = find_expressions(template)? {
+                let mut exp_sub = Substitution {
+                    template: &mut block.template,
+                    added: 0,
+                };
+
+                for ((exp, _), start, end) in exps {
+                    let exp = exp.parse::<ExpressionType>()?;
+                    let exp = Expression {
+                        vars: exp,
+                        start: start + padding.len(),
+                        end: end + padding.len(),
+                        data: &data,
+                    };
+
+                    exp_sub.substitute(&exp)?;
+                }
+                block_sub.substitute(&block)?;
+            }
+        }
     }
-    Substitutions::substitutions(sub_blocks, &mut chapter.content);
-
     Ok(())
 }
 
-pub struct Substitutions {
-    pub start: usize,
-    pub end: usize,
-    pub text: String,
-}
+fn pre_process_funcs(chapter: &mut Chapter, date: &NaiveDate) -> Result<()> {
+    if let Some((junk, (_, exps))) = find_expressions(&chapter.content.clone().as_str())? {
+        let mut exp_sub = Substitution {
+            template: &mut chapter.content,
+            added: 0,
+        };
 
-impl Substitutions {
-    fn substitute(&self, text: &mut String, added: &mut i32) {
-        let prev_len = text.len();
-
-        text.replace_range(
-            (self.start as i32 + *added) as usize..(self.end as i32 + *added) as usize,
-            &self.text,
-        );
-        *added += text.len() as i32 - prev_len as i32;
-    }
-
-    fn substitutions(subs: Vec<Substitutions>, text: &mut String) {
-        let mut added = 0;
-        for sub in subs {
-            sub.substitute(text, &mut added)
+        for ((exp, _), start, end) in exps {
+            let (func_name, vars) = key_var_list(exp)?;
+            let text = match func_name {
+                "table" => make_table(vars, date),
+                _ => return Err(anyhow!("Unrecognised function: {}", func_name)),
+            }?;
+            let sub = BasicSubstitute {
+                start: start + junk.len(),
+                end: end + junk.len(),
+                text,
+            };
+            exp_sub.substitute(&sub)?;
         }
     }
-}
-
-fn pre_process(chapter: &mut Chapter, cfg: Option<&Map<String, Value>>) -> BoxResult<()> {
-    let date = cfg_date(cfg)?;
-    lazy_static! {
-        static ref RE: Regex = Regex::new(
-            r"(?x)  # Ignore whitespace
-        (?:\{\{\#)  # {{#
-        ([^\s]*)\s  # Keyword
-        (.+?)        # Capture one or more of anything
-        (?:\}\})    # }}
-        "
-        )
-        .unwrap();
-    }
-
-    // Call the appropriate substitution function for each match,
-    // passing on any non-keywords in the match
-    let mut subs: Vec<Substitutions> = Vec::new();
-    for cap in RE.captures_iter(&chapter.content) {
-        let keyword = match cap.get(1) {
-            None => {
-                eprintln!("Missing Keyword in preprocessor");
-                continue;
-            }
-            Some(word) => word.as_str(),
-        };
-        let words = cap[2].split(" ").collect::<Vec<&str>>();
-        let substitute = match keyword {
-            "table" => make_table(words, &date),
-            "seti" => make_single_table(words, &date),
-            _ => {
-                eprintln!("Failed to match keyword {}", keyword);
-                continue;
-            }
-        }?;
-        subs.push(Substitutions {
-            start: cap.get(0).unwrap().start(),
-            end: cap.get(0).unwrap().end(),
-            text: substitute,
-        });
-    }
-
-    let mut added = 0;
-    for sub in subs {
-        chapter
-            .content
-            .replace_range((sub.start + added)..(sub.end + added), &sub.text);
-        added += sub.text.len() - (sub.end - sub.start);
-    }
-
     Ok(())
 }
 
@@ -187,7 +154,7 @@ fn cfg_date(cfg: Option<&Map<String, Value>>) -> Result<NaiveDate> {
 }
 
 /// Expects words to be a list of names of Data
-fn make_table(words: Vec<&str>, date: &NaiveDate) -> BoxResult<String> {
+fn make_table(words: Vec<&str>, date: &NaiveDate) -> Result<String> {
     let mut table =
         String::from("\n| Source | Number | Description | \n| ----- | ----- | ----- | \n");
 
@@ -212,7 +179,7 @@ fn make_table(words: Vec<&str>, date: &NaiveDate) -> BoxResult<String> {
     Ok(table)
 }
 
-fn make_single_table(words: Vec<&str>, date: &NaiveDate) -> BoxResult<String> {
+fn _make_single_table(words: Vec<&str>, date: &NaiveDate) -> Result<String> {
     let mut table = String::from("\n| Calculation | Frequency | Value | \n| --- | --- | --- | \n");
     for word in words {
         let words = word.split(",").collect::<Vec<&str>>();
@@ -225,7 +192,7 @@ fn make_single_table(words: Vec<&str>, date: &NaiveDate) -> BoxResult<String> {
                 "| {} | {} | {} |",
                 calc,
                 freq,
-                metric.render(RenderContext::Numbers)
+                metric.render(DisplayType::Rounded)
             ));
             table.push_str("\n");
         } else {
@@ -241,7 +208,7 @@ mod tests {
     use super::*;
     use crate::{Point, TimeSpan};
 
-    fn setup() -> BoxResult<()> {
+    fn setup() -> Result<()> {
         let date = Local::today().naive_local();
         let freq = TimeFrequency::Weekly;
         let span = TimeSpan::new(&date, freq);
@@ -351,50 +318,55 @@ mod tests {
     fn test_single_table() {
         setup().unwrap();
 
-        let date = Local::today().naive_local();
-        let words = vec![
-            "cat_purrs,Change,Quarterly",
-            "cat_purrs,Change,Weekly",
-            "dog_woofs,Change,Yearly",
-            "fish_zooms,AvgFreq,Daily",
-        ];
+        let mut ch = Chapter::new(
+            "test",
+            "{{#table cat_purrs }}
+            {{Change Quarterly}},
+            {{Change Weekly}},
+            {{AvgFreq Monthly}}
+            {{/#}}"
+                .to_string(),
+            "test.md",
+            vec![],
+        );
+        let date = NaiveDate::from_ymd(2022, 2, 4);
 
-        let table = make_single_table(words, &date).unwrap();
         let expected_table = String::from(
             "
 | Calculation | Frequency | Value | 
 | --- | --- | --- | 
-| Change | Quarterly | 233.3% |
-| Change | Weekly | 25.0% |
-| Change | Yearly | 733.3% |
+| Change | Quarterly | 2.3 |
+| Change | Weekly | 0.0 |
+| Change | Yearly | 7.3 |
 | AvgFreq | Daily | 0.4 |
 ",
         );
 
-        assert_eq!(table, expected_table);
+        assert_eq!(pre_process_blocks(&mut ch, &date).unwrap(), ());
+        assert_eq!(ch.content, expected_table);
     }
 
     #[test]
     fn test_pre_process_blocks() {
         let mut ch = Chapter::new(
             "test",
-            "
-        {{Change cat_purrs Weekly}}Weekly change in cat purrs was {{fig}}.{{/Change}}
-        {{Change cat_purrs Quarterly}}Quarterly change in cat purrs was {{fig}} compared to {{prev}}.{{/Change}}
+            "{{#cat_purrs}}
+        Weekly change in cat purrs was {{Change Weekly}}.
+        Quarterly change in cat purrs was {{Change Quarterly}} compared to {{prev Quarterly}}.{{/#}}
         "
             .to_string(),
             "test.md",
             vec![],
         );
 
-        let date = Local::today().naive_local();
+        let date = NaiveDate::from_ymd(2022, 2, 4);
 
         assert_eq!(pre_process_blocks(&mut ch, &date).unwrap(), ());
         assert_eq!(
             ch.content,
             "
         Weekly change in cat purrs was up 25.0%.
-        Quarterly change in cat purrs was up 233.3% compared to 2021 (31st October to 6th November).
+        Quarterly change in cat purrs was up 233.3% compared to 2021 (25th October to 31st October).
         "
         );
     }
@@ -403,35 +375,91 @@ mod tests {
     fn test_block_vars() {
         let mut ch = Chapter::new(
             "test",
-            "{{AvgFreq fish_zooms Daily}}
-            {{fig}}
-            {{prev}}
-            {{freq}}
-            {{calc}}
+            "{{# fish_zooms }}
+            {{AvgFreq Daily}}
+            {{Change Weekly}}
             {{name}}
             {{Name}}
             {{desc}}
             {{span}}
-            {{/AvgFreq}}"
+            {{/#}}
+            
+            {{# cat_purrs }}
+            {{Name}} are {{Change Quarterly}} since {{prev Quarterly}}
+            {{/#}}"
                 .to_string(),
             "test.md",
             vec![],
         );
-        let date = Local::today().naive_local();
+        let date = NaiveDate::from_ymd(2022, 2, 4);
 
         assert_eq!(pre_process_blocks(&mut ch, &date).unwrap(), ());
         assert_eq!(
             ch.content,
             "
             0.4 per day
-            2022 (30th January to 5th February)
-            Daily
-            AvgFreq
+            down 14.3%
             fish_zooms
             Fish Zooms
             A measure of the number of times my fish zoomed
             2022 (31st January to 6th February)
+            
+            
+            
+            Cat Purrs are up 233.3% since 2021 (25th October to 31st October)
             "
+        );
+    }
+
+    #[test]
+    fn test_block_vars_2() {
+        let mut ch = Chapter::new(
+            "test",
+            "
+# Sample
+- {{# website_visits }}Total website users were {{Change Weekly}}, we are now averaging {{AvgFreq Daily}}.
+- {{Name}} are {{Change Yearly}} compared to this same reporting period last year {{prev Yearly}}.{{/#}}
+            
+- {{# cat_purrs }}{{Name}} are {{Change Quarterly}} since {{prev Quarterly}}{{/#}}"
+                .to_string(),
+            "test.md",
+            vec![],
+        );
+        let date = NaiveDate::from_ymd(2022, 2, 4);
+
+        assert_eq!(pre_process_blocks(&mut ch, &date).unwrap(), ());
+        assert_eq!(
+            ch.content,
+            "
+# Sample
+- Total website users were down 12.9%, we are now averaging 833.7 per day.
+- Visits to the website are up 64.6% compared to this same reporting period last year 2021 (1st February to 7th February).
+            
+- Cat Purrs are up 233.3% since 2021 (25th October to 31st October)"
+        );
+    }
+
+    #[test]
+    fn test_block_table() {
+        let mut ch = Chapter::new(
+            "test",
+            "{{table cat_purrs dog_woofs fish_zooms}}".to_string(),
+            "test.md",
+            vec![],
+        );
+        let date = NaiveDate::from_ymd(2022, 2, 4);
+
+        assert_eq!(pre_process_funcs(&mut ch, &date).unwrap(), ());
+        assert_eq!(
+            ch.content,
+            "
+| Source | Number | Description | 
+| ----- | ----- | ----- | 
+| Cat Purrs | 10 | A measure of the number of times my cat purred | 
+| Dog Woofs | 25 | A measure of the number of times my dog woofed | 
+| Fish Zooms | 3 | A measure of the number of times my fish zoomed | 
+
+"
         );
     }
 }

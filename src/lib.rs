@@ -1,7 +1,9 @@
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use core::fmt;
+use parser::FigureExpression;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::{collections::HashMap, fmt::Display};
 
 use rusqlite::{params, Connection};
@@ -115,7 +117,7 @@ impl Metric {
         )
     }
 
-    pub fn render(&self, ctx: RenderContext) -> String {
+    pub fn render(&self, ctx: DisplayType) -> String {
         match &self.calculation_type[..] {
             "Change" => Change::from(&self)
                 .expect("Failed to create change")
@@ -127,7 +129,7 @@ impl Metric {
         }
     }
 
-    pub fn get_string(&self, name: &str, ctx: RenderContext) -> Result<String> {
+    pub fn get_string(&self, name: &str, ctx: DisplayType) -> Result<String> {
         Ok(match name {
             "fig" => self.render(ctx),
             "prev" => (&self.data.span - self.frequency).to_string(),
@@ -150,26 +152,39 @@ impl Metric {
 
 pub trait Figure {
     fn fig(&self) -> f64;
-    fn render(&self, ctx: RenderContext) -> String;
+    fn render(&self, ctx: DisplayType) -> String {
+        let description = if self.fig() > 0.0 { "up" } else { "down" };
+        match ctx {
+            DisplayType::Rounded => format!("{:.1}", self.fig()),
+            DisplayType::DescribedRounded => {
+                format!("{} {:.1}", description, self.fig().abs())
+            }
+            DisplayType::Percentage => format!("{:.1}%", (100.0 * self.fig())),
+            DisplayType::DescribedPercentage => {
+                format!("{} {:.1}%", description, (100.0 * self.fig().abs()))
+            }
+        }
+    }
 
     fn from_inside(
         points: HashMap<TimeSpan, Point>,
         span: TimeSpan,
         frequency: TimeFrequency,
         depth: i32,
-    ) -> Result<Vec<f64>, String> {
+    ) -> Result<Vec<f64>> {
         TimeSpanIter::new(span, frequency, depth)
             .map(|span| {
                 if let Some(point) = points.get(&span) {
                     Ok(point.fig())
                 } else {
-                    return Err(format!(
+                    return Err(anyhow!(
                         "Couldn't find datapoint from span: {:#?} in {:#?}",
-                        span, points
+                        span,
+                        points
                     ));
                 }
             })
-            .collect::<Result<Vec<_>, _>>()
+            .collect::<Result<Vec<_>>>()
     }
 }
 #[derive(Debug, Serialize, Deserialize)]
@@ -184,17 +199,22 @@ impl Figure for Change {
     fn fig(&self) -> f64 {
         (self.new - self.old) / self.old
     }
-
-    fn render(&self, ctx: RenderContext) -> String {
-        match ctx {
-            RenderContext::Words => DisplayType::DescribedPercentage(self).to_string(),
-            RenderContext::Numbers => DisplayType::Percentage(self).to_string(),
-        }
-    }
 }
 
 impl<'a> Change {
-    pub fn from(metric: &Metric) -> Result<Change, String> {
+    pub fn from_figure_expresssion(exp: &FigureExpression, data: &Data) -> Result<Self> {
+        let points = data.read_points((&data.span - exp.frequency).start(), data.span.end())?;
+        let vals = Change::from_inside(points, data.span, exp.frequency, 2)?;
+
+        Ok(Change {
+            old: vals[1],
+            new: vals[0],
+            span: data.span,
+            frequency: exp.frequency,
+        })
+    }
+
+    pub fn from(metric: &Metric) -> Result<Change> {
         let datapoints = metric
             .data
             .read_points(
@@ -214,6 +234,12 @@ impl<'a> Change {
     }
 }
 
+impl Display for Change {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.render(DisplayType::DescribedPercentage))
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct AvgFreq {
     fig: f64,
@@ -226,29 +252,37 @@ impl Figure for AvgFreq {
         self.fig * (self.span.clone() / self.frequency.clone())
     }
 
-    fn render(&self, ctx: RenderContext) -> String {
+    fn render(&self, ctx: DisplayType) -> String {
         match ctx {
-            RenderContext::Words => {
-                format!(
-                    "{:.1} per {}",
-                    self.fig(),
-                    match self.frequency {
-                        TimeFrequency::Yearly => "year",
-                        TimeFrequency::Quarterly => "quarter",
-                        TimeFrequency::Monthly => "month",
-                        TimeFrequency::Weekly => "week",
-                        TimeFrequency::Daily => "day",
-                    }
-                )
+            DisplayType::Rounded => format!("{:.1}", self.fig()),
+            DisplayType::DescribedRounded => {
+                let freq = match self.frequency {
+                    TimeFrequency::Yearly => "year",
+                    TimeFrequency::Quarterly => "quarter",
+                    TimeFrequency::Monthly => "month",
+                    TimeFrequency::Weekly => "week",
+                    TimeFrequency::Daily => "day",
+                };
+                format!("{:.1} per {}", self.fig(), freq)
             }
-            RenderContext::Numbers => {
-                format!("{:.1}", self.fig())
+            DisplayType::Percentage => panic!("AvgFreq cannot be represented as a percentage"),
+            DisplayType::DescribedPercentage => {
+                panic!("AvgFreq cannot be represented as a described percentage")
             }
         }
     }
 }
 
 impl AvgFreq {
+    pub fn from_figure_expresssion(exp: &FigureExpression, data: &Data) -> Result<Self> {
+        let point = data.read_point()?;
+        Ok(AvgFreq {
+            fig: point.fig(),
+            span: data.span,
+            frequency: exp.frequency,
+        })
+    }
+
     pub fn from(metric: &Metric) -> Result<AvgFreq, String> {
         let datapoints = metric
             .data
@@ -266,13 +300,6 @@ impl AvgFreq {
         }
     }
 }
-
-impl Display for Change {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", DisplayType::DescribedPercentage(self))
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ComputedStringMetric {
     pub fig: String,
@@ -305,10 +332,6 @@ impl Figure for Fig {
     fn fig(&self) -> f64 {
         self.fig
     }
-
-    fn render(&self, _ctx: RenderContext) -> String {
-        self.fig().to_string()
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -329,7 +352,7 @@ impl Figure for Figures {
         }
     }
 
-    fn render(&self, ctx: RenderContext) -> String {
+    fn render(&self, ctx: DisplayType) -> String {
         match self {
             Figures::Change(i) => i.render(ctx),
             Figures::Fig(i) => i.render(ctx),
@@ -339,7 +362,7 @@ impl Figure for Figures {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Default)]
 pub struct Data {
     pub name: String,
     pub long_name: String,
@@ -510,6 +533,22 @@ impl Data {
         }
         Ok(found)
     }
+
+    fn get_string(&self, name: String) -> Result<String> {
+        Ok(match name.as_str() {
+            "name" => self.name.clone(),
+            "Name" => self.long_name.clone(),
+            "desc" => {
+                if let Some(desc) = self.description.clone() {
+                    desc
+                } else {
+                    "-".to_string()
+                }
+            }
+            "span" => self.span.to_string(),
+            _ => return Err(anyhow!("{} is not a recognised variable for Data", name)),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -549,10 +588,6 @@ impl Figure for Point {
     fn fig(&self) -> f64 {
         self.value
     }
-
-    fn render(&self, _ctx: RenderContext) -> String {
-        self.value.to_string()
-    }
 }
 
 impl Point {
@@ -563,39 +598,33 @@ impl Point {
 
 impl Display for Point {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        DisplayType::Rounded(self).fmt(f)
+        write!(f, "{}", self.render(DisplayType::Rounded))
     }
 }
 
-#[derive(Serialize)]
-pub enum DisplayType<'a, T: Figure> {
-    Rounded(&'a T),
-    Percentage(&'a T),
-    DescribedPercentage(&'a T),
-    PerFrequency(&'a T, TimeSpan, TimeFrequency),
+#[derive(Serialize, Debug, Clone, Copy)]
+pub enum DisplayType {
+    Rounded,
+    DescribedRounded,
+    Percentage,
+    DescribedPercentage,
 }
 
-impl<'a, T: Figure> Display for DisplayType<'a, T> {
+impl Display for DisplayType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DisplayType::Rounded(fig) => write!(f, "{:.1}", fig.fig()),
-            DisplayType::Percentage(fig) => write!(f, "{:.1}%", (100.0 * fig.fig())),
-            DisplayType::DescribedPercentage(fig) => {
-                let description = if fig.fig() > 0.0 { "up" } else { "down" };
-                write!(f, "{} {:.1}%", description, (100.0 * fig.fig().abs()))
-            }
-            DisplayType::PerFrequency(fig, span, freq) => write!(
-                f,
-                "{:.1} per {}",
-                { fig.fig() * (span.clone() / freq.clone()) },
-                match freq {
-                    TimeFrequency::Yearly => "year",
-                    TimeFrequency::Quarterly => "quarter",
-                    TimeFrequency::Monthly => "month",
-                    TimeFrequency::Weekly => "week",
-                    TimeFrequency::Daily => "day",
-                }
-            ),
+        write!(f, "{:#?}", self)
+    }
+}
+
+impl FromStr for DisplayType {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Rounded" => Ok(Self::Rounded),
+            "DescribedRounded" => Ok(Self::DescribedRounded),
+            "Percentage" => Ok(Self::Percentage),
+            "DescribedPercetange" => Ok(Self::DescribedPercentage),
+            _ => Err(anyhow!("{} is not a valid DisplayType", s)),
         }
     }
 }
@@ -655,7 +684,7 @@ mod tests {
 
         let change = Change::from(&metric);
         if let Ok(change) = change {
-            let data = change.render(RenderContext::Words);
+            let data = change.render(DisplayType::DescribedPercentage);
 
             assert_eq!(data, "up 64.6%");
         } else {

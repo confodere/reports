@@ -62,7 +62,7 @@ fn simple_helper(
             let result = hbs.render_template(
                 &metric.long_text,
                 &Sample {
-                    fig: metric.render(render_context),
+                    fig: metric.render(DisplayType::DescribedPercentage),
                     prev: (&metric.data.span - metric.frequency).to_string(),
                 },
             )?;
@@ -70,7 +70,7 @@ fn simple_helper(
             out.write(&result)?;
         }
         RenderContext::Numbers => {
-            out.write(&metric.render(render_context))?;
+            out.write(&metric.render(DisplayType::Rounded))?;
         }
     }
     //out.write(&metric.render(render_context))?;
