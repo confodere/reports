@@ -15,6 +15,8 @@ use nom::{
 };
 use std::iter;
 
+pub mod substitute;
+
 /// Opening tag for a block element
 fn opening(i: &str) -> IResult<&str, (&str, Option<&str>, &str, &str)> {
     tuple((tag("{{#"), opt(multispace0), take_until("}}"), tag("}}")))(i)
@@ -224,6 +226,37 @@ pub enum ExpressionType {
     Simple(SimpleExpression),
     Figure(FigureExpression),
     Prev(TimeFrequency),
+}
+
+impl From<TimeFrequency> for ExpressionType {
+    fn from(v: TimeFrequency) -> Self {
+        Self::Prev(v)
+    }
+}
+
+impl ExpressionType {
+    /// Returns `true` if the expression type is [`Prev`].
+    ///
+    /// [`Prev`]: ExpressionType::Prev
+    pub fn is_prev(&self) -> bool {
+        matches!(self, Self::Prev(..))
+    }
+
+    pub fn try_into_prev(self) -> Result<TimeFrequency, Self> {
+        if let Self::Prev(v) = self {
+            Ok(v)
+        } else {
+            Err(self)
+        }
+    }
+
+    pub fn as_prev(&self) -> Option<&TimeFrequency> {
+        if let Self::Prev(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
 }
 
 impl Default for ExpressionType {
