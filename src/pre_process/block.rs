@@ -6,7 +6,8 @@ use std::fmt::Display;
 use std::ops::Add;
 use std::rc::Rc;
 
-use crate::{AvgFreq, Change, Data, DisplayType, Fig, TimeFrequency};
+use crate::functions::{AvgFreq, Change, Fig};
+use crate::{Data, DisplayType, TimeFrequency};
 
 lazy_static! {
     static ref COMMANDS: HashSet<&'static str> = {

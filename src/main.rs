@@ -1,3 +1,5 @@
+use crate::functions::Figure;
+use crate::time_span::TimeFrequency;
 use chrono::{Datelike, Month, NaiveDate};
 use handlebars::RenderError;
 use handlebars::{

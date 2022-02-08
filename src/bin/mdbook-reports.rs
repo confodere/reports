@@ -1,3 +1,4 @@
+use crate::pre_process::Processor;
 use clap::{Parser, Subcommand};
 use mdbook::preprocess::{CmdPreprocessor, Preprocessor};
 use reports::*;
