@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crate::{AvgFreq, Change, Data, DisplayType, Figure, Metric, TimeFrequency};
+use crate::{AvgFreq, Change, Data, DisplayType, Metric, TimeFrequency};
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use nom::{
@@ -197,20 +197,8 @@ pub struct FigureExpression {
 impl FigureExpression {
     fn to_substitution_content(&self, data: &Data) -> Result<String> {
         match self.calculation_type.as_str() {
-            "Change" => Ok(Change::from_figure_expresssion(&self, data)?.render(
-                if let Some(ctx) = self.context {
-                    ctx
-                } else {
-                    DisplayType::DescribedPercentage
-                },
-            )),
-            "AvgFreq" => Ok(AvgFreq::from_figure_expresssion(&self, data)?.render(
-                if let Some(ctx) = self.context {
-                    ctx
-                } else {
-                    DisplayType::DescribedRounded
-                },
-            )),
+            "Change" => Ok(Change::from_figure_expresssion(&self, data)?.to_string()),
+            "AvgFreq" => Ok(AvgFreq::from_figure_expresssion(&self, data)?.to_string()),
             _ => {
                 return Err(anyhow!(
                     "Invalid calculation_type: {}",

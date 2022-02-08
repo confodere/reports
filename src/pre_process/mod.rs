@@ -2,12 +2,14 @@ use crate::parser::{
     find_expressions, key_var_list, BasicSubstitute, Block, Expression, ExpressionType,
     Substitution,
 };
-use crate::{parser::find_blocks, Data, DisplayType, Figure, Metric, TimeFrequency};
+use crate::{parser::find_blocks, Data, Figure, Metric, TimeFrequency};
 use anyhow::{anyhow, Result};
 use chrono::{Local, NaiveDate};
 use mdbook::book::{BookItem, Chapter};
 use mdbook::preprocess::Preprocessor;
 use toml::{map::Map, value::Value};
+
+pub mod block;
 
 pub struct Processor;
 
@@ -188,12 +190,7 @@ fn _make_single_table(words: Vec<&str>, date: &NaiveDate) -> Result<String> {
             //let rc = RenderContext::from_str(rc).unwrap_or(RenderContext::Numbers);
             let metric = Metric::read(name.to_string(), &date, calc.to_string(), freq_obj)?;
 
-            table.push_str(&format!(
-                "| {} | {} | {} |",
-                calc,
-                freq,
-                metric.render(DisplayType::Rounded)
-            ));
+            table.push_str(&format!("| {} | {} | {} |", calc, freq, metric.render()));
             table.push_str("\n");
         } else {
             return Err(mdbook::errors::Error::msg("Not enough arguments passed").into());
@@ -296,7 +293,7 @@ mod tests {
     fn test_table() {
         setup().unwrap();
 
-        let date = Local::today().naive_local();
+        let date = NaiveDate::from_ymd(2022, 2, 4);
         let words = vec!["cat_purrs", "dog_woofs", "fish_zooms"];
 
         let table = make_table(words, &date).unwrap();
@@ -351,7 +348,7 @@ mod tests {
         let mut ch = Chapter::new(
             "test",
             "{{#cat_purrs}}
-        Weekly change in cat purrs was {{Change Weekly}}.
+        Weekly change in cat purrs was {{Change Weekly DescribedPercentage}}.
         Quarterly change in cat purrs was {{Change Quarterly}} compared to {{prev Quarterly}}.{{/#}}
         "
             .to_string(),
@@ -443,7 +440,11 @@ mod tests {
     fn test_block_table() {
         let mut ch = Chapter::new(
             "test",
-            "{{table cat_purrs dog_woofs fish_zooms}}".to_string(),
+            "{{#table Change Rounded}}
+            {{col Daily Weekly Monthly Quarterly Yearly}}
+            {{row cat_purrs dog_woofs fish_zooms}}
+            {{/#}}"
+                .to_string(),
             "test.md",
             vec![],
         );

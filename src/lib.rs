@@ -1,7 +1,8 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use chrono::NaiveDate;
 use core::fmt;
 use parser::FigureExpression;
+use pre_process::block::{CommandDisplay, CommandFreq};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::{collections::HashMap, fmt::Display};
@@ -11,9 +12,10 @@ use rusqlite::{params, Connection};
 mod time_span;
 pub use crate::time_span::{TimeFrequency, TimeSpan, TimeSpanIter};
 
-mod report_process;
-pub use crate::report_process::*;
+mod pre_process;
+pub use crate::pre_process::Processor;
 
+pub mod functions;
 pub mod parser;
 
 const DATABASE_FILE: &str = "ignore/data.db";
@@ -22,6 +24,10 @@ const READ_DATA: &str = r#"
     SELECT name, long_name, description, frequency
     FROM Data
     WHERE name = ?1"#;
+
+const READ_DATA_NAMES: &str = "
+    SELECT DISTINCT name FROM Data;
+";
 
 const READ_METRIC: &str = r#"
     SELECT long_text, frequency, calculation_type 
@@ -117,21 +123,21 @@ impl Metric {
         )
     }
 
-    pub fn render(&self, ctx: DisplayType) -> String {
+    pub fn render(&self) -> String {
         match &self.calculation_type[..] {
             "Change" => Change::from(&self)
                 .expect("Failed to create change")
-                .render(ctx),
+                .to_string(),
             "AvgFreq" => AvgFreq::from(&self)
                 .expect("Failed to create AvgFreq")
-                .render(ctx),
+                .to_string(),
             _ => panic!("Unidentified figure type"),
         }
     }
 
-    pub fn get_string(&self, name: &str, ctx: DisplayType) -> Result<String> {
+    pub fn get_string(&self, name: &str) -> Result<String> {
         Ok(match name {
-            "fig" => self.render(ctx),
+            "fig" => self.render(),
             "prev" => (&self.data.span - self.frequency).to_string(),
             "freq" => self.frequency.to_string(),
             "calc" => self.calculation_type.clone(),
@@ -152,19 +158,7 @@ impl Metric {
 
 pub trait Figure {
     fn fig(&self) -> f64;
-    fn render(&self, ctx: DisplayType) -> String {
-        let description = if self.fig() > 0.0 { "up" } else { "down" };
-        match ctx {
-            DisplayType::Rounded => format!("{:.1}", self.fig()),
-            DisplayType::DescribedRounded => {
-                format!("{} {:.1}", description, self.fig().abs())
-            }
-            DisplayType::Percentage => format!("{:.1}%", (100.0 * self.fig())),
-            DisplayType::DescribedPercentage => {
-                format!("{} {:.1}%", description, (100.0 * self.fig().abs()))
-            }
-        }
-    }
+    fn display_type(&self) -> DisplayType;
 
     fn from_inside(
         points: HashMap<TimeSpan, Point>,
@@ -187,17 +181,73 @@ pub trait Figure {
             .collect::<Result<Vec<_>>>()
     }
 }
+
+pub struct ShowFigure<F>(pub F);
+
+impl<T: Figure> Display for ShowFigure<&T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.display_type() {
+            DisplayType::Rounded => write!(f, "{:.1}", self.0.fig()),
+            DisplayType::DescribedRounded => {
+                let description = if self.0.fig() > 0.0 { "up" } else { "down" };
+                write!(f, "{} {:.1}", description, self.0.fig().abs())
+            }
+            DisplayType::Percentage => write!(f, "{:.1}%", (100.0 * self.0.fig())),
+            DisplayType::DescribedPercentage => {
+                let description = if self.0.fig() > 0.0 { "up" } else { "down" };
+                write!(f, "{} {:.1}", description, (100.0 * self.0.fig().abs()))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Change {
     old: f64,
     new: f64,
     span: TimeSpan,
     frequency: TimeFrequency,
+    display_type: DisplayType,
 }
 
 impl Figure for Change {
     fn fig(&self) -> f64 {
         (self.new - self.old) / self.old
+    }
+
+    fn display_type(&self) -> DisplayType {
+        self.display_type
+    }
+}
+
+impl TryFrom<CommandFreq> for Change {
+    type Error = Error;
+
+    /// Tries to convert CommandFreq into Change
+    /// Defaults display_type to DisplayType::Percentage if None
+    fn try_from(value: CommandFreq) -> Result<Self, Self::Error> {
+        let points = value.data.read_points(
+            (&value.data.span - value.frequency).start(),
+            value.data.span.end(),
+        )?;
+        let vals = Change::from_inside(points, value.data.span, value.frequency, 2)?;
+
+        Ok(Change {
+            old: vals[1],
+            new: vals[0],
+            span: value.data.span,
+            frequency: value.frequency,
+            display_type: match value.display_type {
+                Some(v) => v,
+                None => DisplayType::Percentage,
+            },
+        })
+    }
+}
+
+impl Display for Change {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        ShowFigure(self).fmt(f)
     }
 }
 
@@ -211,6 +261,7 @@ impl<'a> Change {
             new: vals[0],
             span: data.span,
             frequency: exp.frequency,
+            display_type: DisplayType::Percentage,
         })
     }
 
@@ -230,21 +281,16 @@ impl<'a> Change {
             new: vals[0],
             span: metric.data.span,
             frequency: metric.frequency,
+            display_type: DisplayType::Percentage,
         })
     }
 }
-
-impl Display for Change {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.render(DisplayType::DescribedPercentage))
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct AvgFreq {
     fig: f64,
     span: TimeSpan,
     frequency: TimeFrequency,
+    display_type: DisplayType,
 }
 
 impl Figure for AvgFreq {
@@ -252,9 +298,34 @@ impl Figure for AvgFreq {
         self.fig * (self.span.clone() / self.frequency.clone())
     }
 
-    fn render(&self, ctx: DisplayType) -> String {
-        match ctx {
-            DisplayType::Rounded => format!("{:.1}", self.fig()),
+    fn display_type(&self) -> DisplayType {
+        self.display_type
+    }
+}
+
+impl TryFrom<CommandFreq> for AvgFreq {
+    type Error = Error;
+
+    /// Tries to convert CommandFreq into AvgFreq
+    /// Defaults display_type to DisplayType::Rounded if None
+    fn try_from(value: CommandFreq) -> Result<Self, Self::Error> {
+        let point = value.data.read_point()?;
+        Ok(AvgFreq {
+            fig: point.fig(),
+            span: value.data.span,
+            frequency: value.frequency,
+            display_type: match value.display_type {
+                Some(v) => v,
+                None => DisplayType::Rounded,
+            },
+        })
+    }
+}
+
+impl Display for AvgFreq {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.display_type() {
+            DisplayType::Rounded => write!(f, "{:.1}", self.fig()),
             DisplayType::DescribedRounded => {
                 let freq = match self.frequency {
                     TimeFrequency::Yearly => "year",
@@ -263,9 +334,11 @@ impl Figure for AvgFreq {
                     TimeFrequency::Weekly => "week",
                     TimeFrequency::Daily => "day",
                 };
-                format!("{:.1} per {}", self.fig(), freq)
+                write!(f, "{:.1} per {}", self.fig(), freq)
             }
-            DisplayType::Percentage => panic!("AvgFreq cannot be represented as a percentage"),
+            DisplayType::Percentage => {
+                panic!("AvgFreq cannot be represented as a percentage")
+            }
             DisplayType::DescribedPercentage => {
                 panic!("AvgFreq cannot be represented as a described percentage")
             }
@@ -280,6 +353,7 @@ impl AvgFreq {
             fig: point.fig(),
             span: data.span,
             frequency: exp.frequency,
+            display_type: DisplayType::Rounded,
         })
     }
 
@@ -294,6 +368,7 @@ impl AvgFreq {
                 fig: point.fig(),
                 span: metric.data.span,
                 frequency: metric.frequency,
+                display_type: DisplayType::Rounded,
             })
         } else {
             Err(String::from("Failed to create AvgFreq"))
@@ -326,39 +401,41 @@ impl RenderContext {
 #[derive(Serialize, Deserialize)]
 pub struct Fig {
     pub fig: f64,
+    display_type: DisplayType,
+}
+
+impl Fig {
+    pub fn new(fig: f64, display_type: Option<DisplayType>) -> Self {
+        Fig {
+            fig,
+            display_type: match display_type {
+                Some(display_type) => display_type,
+                None => DisplayType::Rounded,
+            },
+        }
+    }
 }
 
 impl Figure for Fig {
     fn fig(&self) -> f64 {
         self.fig
     }
-}
-
-#[derive(Serialize, Deserialize)]
-pub enum Figures {
-    Change(Change),
-    Fig(Fig),
-    Point(Point),
-    AvgFreq(AvgFreq),
-}
-
-impl Figure for Figures {
-    fn fig(&self) -> f64 {
-        match self {
-            Figures::Change(i) => i.fig(),
-            Figures::Fig(i) => i.fig(),
-            Figures::Point(i) => i.fig(),
-            Figures::AvgFreq(i) => i.fig(),
-        }
+    fn display_type(&self) -> DisplayType {
+        self.display_type
     }
+}
 
-    fn render(&self, ctx: DisplayType) -> String {
-        match self {
-            Figures::Change(i) => i.render(ctx),
-            Figures::Fig(i) => i.render(ctx),
-            Figures::Point(i) => i.render(ctx),
-            Figures::AvgFreq(i) => i.render(ctx),
-        }
+impl TryFrom<CommandDisplay> for Fig {
+    type Error = Error;
+
+    fn try_from(value: CommandDisplay) -> Result<Self, Self::Error> {
+        Ok(Fig::new(value.data.read_point()?.fig(), value.display_type))
+    }
+}
+
+impl Display for Fig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        ShowFigure(self).fmt(f)
     }
 }
 
@@ -418,6 +495,20 @@ impl Data {
         let conn = Connection::open(DATABASE_FILE)?;
 
         Data::from_name(&conn, name, date)
+    }
+
+    pub fn read_names() -> rusqlite::Result<Vec<String>> {
+        let conn = Connection::open(DATABASE_FILE)?;
+        let mut stmt = conn.prepare(READ_DATA_NAMES)?;
+
+        let rows = stmt.query_and_then([], |row| row.get::<_, String>(0))?;
+
+        let mut names = Vec::new();
+        for name in rows {
+            names.push(name?)
+        }
+
+        Ok(names)
     }
 
     fn from_name(conn: &Connection, name: &String, date: &NaiveDate) -> rusqlite::Result<Data> {
@@ -588,6 +679,10 @@ impl Figure for Point {
     fn fig(&self) -> f64 {
         self.value
     }
+
+    fn display_type(&self) -> DisplayType {
+        DisplayType::Rounded
+    }
 }
 
 impl Point {
@@ -598,11 +693,11 @@ impl Point {
 
 impl Display for Point {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.render(DisplayType::Rounded))
+        ShowFigure(self).fmt(f)
     }
 }
 
-#[derive(Serialize, Debug, Clone, Copy)]
+#[derive(Serialize, Debug, Clone, Copy, Deserialize)]
 pub enum DisplayType {
     Rounded,
     DescribedRounded,
@@ -620,10 +715,10 @@ impl FromStr for DisplayType {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "Rounded" => Ok(Self::Rounded),
-            "DescribedRounded" => Ok(Self::DescribedRounded),
-            "Percentage" => Ok(Self::Percentage),
-            "DescribedPercetange" => Ok(Self::DescribedPercentage),
+            "rounded" => Ok(Self::Rounded),
+            "describedrounded" => Ok(Self::DescribedRounded),
+            "percentage" => Ok(Self::Percentage),
+            "describedpercetange" => Ok(Self::DescribedPercentage),
             _ => Err(anyhow!("{} is not a valid DisplayType", s)),
         }
     }
@@ -646,13 +741,6 @@ pub struct Statement {
 pub struct Paragraph {
     pub name: String,
     pub contents: Vec<Vec<Statement>>,
-}
-
-#[derive(Serialize)]
-pub struct HbsData {
-    pub data: HashMap<String, ComputedStringMetric>,
-    pub figs: HashMap<String, Figures>,
-    pub context: RenderContext,
 }
 
 #[cfg(test)]
@@ -684,7 +772,7 @@ mod tests {
 
         let change = Change::from(&metric);
         if let Ok(change) = change {
-            let data = change.render(DisplayType::DescribedPercentage);
+            let data = change.to_string();
 
             assert_eq!(data, "up 64.6%");
         } else {
