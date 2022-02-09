@@ -1,21 +1,234 @@
+use std::ops::{Deref, DerefMut, Range};
 use std::str::FromStr;
 
 use crate::{AvgFreq, Change, Data, DisplayType, Metric, TimeFrequency};
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use nom::{
+    branch::alt,
     bytes::complete::{tag, take, take_until},
-    character::complete::multispace0,
-    combinator::opt,
+    character::complete::{alphanumeric1, multispace0, multispace1},
+    combinator::{consumed, opt},
     error::Error,
     error::{ErrorKind, ParseError},
-    multi::separated_list0,
-    sequence::{pair, terminated, tuple},
+    multi::{many0, separated_list0, separated_list1},
+    sequence::{delimited, pair, separated_pair, terminated, tuple},
     Err, FindSubstring, IResult, InputLength, Parser,
 };
 use std::iter;
 
 pub mod substitute;
+
+/// Matches space separated alphanumeric arguments.
+///
+/// # Example
+/// ```
+/// use nom::error::{Error, ErrorKind};
+/// use nom::Err;
+/// use reports::parser::arg_list;
+/// assert_eq!(arg_list("one"), Ok(("", vec!["one"])));
+/// assert_eq!(arg_list("one two three"), Ok(("", vec!["one", "two", "three"])));
+/// assert_eq!(arg_list(" "), Err(Err::Error((Error{input: " ", code: ErrorKind::AlphaNumeric}))));
+/// ```
+pub fn arg_list(input: &str) -> IResult<&str, Vec<&str>> {
+    separated_list1(tag(" "), alphanumeric1)(input)
+}
+
+/// A combinator that wraps an `inner` parser with a leading `start` tag and an ending `end`,
+/// returning the output of `inner`.
+fn delimited_args<'a, F: 'a, O, E: ParseError<&'a str>>(
+    start: &'a str,
+    inner: F,
+    end: &'a str,
+) -> impl FnMut(&'a str) -> IResult<&'a str, O, E>
+where
+    F: Fn(&'a str) -> IResult<&'a str, O, E>,
+{
+    delimited(
+        pair(tag(start), multispace0),
+        inner,
+        pair(multispace0, tag(end)),
+    )
+}
+
+/// Matches a list of space separated arguments with [arg_list] surrounded by a \[ and \].
+///
+/// # Example
+/// ```
+/// use reports::parser::bracket_args;
+/// assert_eq!(bracket_args("[one two three]"), Ok(("", vec!["one", "two", "three"])));
+/// ```
+pub fn bracket_args(input: &str) -> IResult<&str, Vec<&str>> {
+    delimited_args("[", arg_list, "]")(input)
+}
+
+/// Matches a list of space separated arguments with [arg_list] surrounded by a \{\{ and \}\}.
+///
+/// # Example
+/// ```
+/// use reports::parser::curly_args;
+/// assert_eq!(curly_args("{{ one two three }}"), Ok(("", vec!["one", "two", "three"])));
+/// ```
+pub fn curly_args(input: &str) -> IResult<&str, Vec<&str>> {
+    delimited_args("{{", arg_list, "}}")(input)
+}
+
+/// Matches a list of space separated arguments with [arg_list] surrounded by a \{\{# and \}\}
+///
+/// # Example
+/// ```
+/// use reports::parser::curly_block_args;
+/// assert_eq!(curly_block_args("{{# one two three }}"), Ok(("", vec!["one", "two", "three"])));
+/// ```
+pub fn curly_block_args(input: &str) -> IResult<&str, Vec<&str>> {
+    delimited_args("{{#", arg_list, "}}")(input)
+}
+
+/// Matches many named arguments with the form arg_name=\[arg arg arg\]
+///
+/// # Example
+/// ```
+/// use reports::parser::named_args;
+/// assert_eq!(named_args("arg=[one two three]"), Ok(("", vec![("arg", vec!["one", "two", "three"])])));
+/// ```
+pub fn named_args(input: &str) -> IResult<&str, Vec<(&str, Vec<&str>)>> {
+    many0(separated_pair(
+        alphanumeric1,
+        tag("="),
+        terminated(bracket_args, multispace0),
+    ))(input)
+}
+
+fn arg_and_named_args(input: &str) -> IResult<&str, (&str, Vec<(&str, Vec<&str>)>)> {
+    pair(terminated(alphanumeric1, multispace1), named_args)(input)
+}
+
+/// Matches a named expression with the form {{* arg arg=[one two three] arg=[four five six] }}
+///
+/// # Example
+/// ```
+/// use reports::parser::named_expression;
+/// assert_eq!(
+///     named_expression("{{* arg arg=[one two three] arg=[four five six] }}"),
+///     Ok(("", ("arg", vec![("arg", vec!["one", "two", "three"]), ("arg", vec!["four", "five", "six"])])))
+/// );
+/// ```
+pub fn named_expression(input: &str) -> IResult<&str, (&str, Vec<(&str, Vec<&str>)>)> {
+    delimited_args("{{*", arg_and_named_args, "}}")(input)
+}
+
+/// Matches a block with the form {{# arg arg }}anything{{/#}}
+///
+/// # Example
+/// ```
+/// use reports::parser::{block_args, Statement};
+/// assert_eq!(block_args("{{# one two three }}{{/#}}"), Ok(("", (vec!["one", "two", "three"], vec![]))));
+/// assert_eq!(block_args("{{# one two three }}{{ four five six }}{{/#}}"), Ok(("", (vec!["one", "two", "three"], vec![Statement::Expression(vec!["four", "five", "six"])]))));
+/// assert_eq!(block_args("{{# one two three }}{{* table rows=[four five six] cols=[seven eight nine] }}{{/#}}"), Ok(("", (vec!["one", "two", "three"], vec![Statement::NamedExpression("table", vec![("rows", vec!["four", "five", "six"]), ("cols", vec!["seven", "eight", "nine"])])]))));
+/// ```
+pub fn block_args(input: &str) -> IResult<&str, ((usize, Vec<&str>), Vec<LocatedStatement>)> {
+    terminated(
+        pair(
+            consumed(curly_block_args).map(|(consumed, args)| (consumed.len(), args)),
+            terminated(expression, take_until("{{/#}}")),
+        ),
+        tag("{{/#}}"),
+    )(input)
+}
+
+/// Returns a matched collection of statements by:  
+/// taking until the start of an open/close clause i.e. `{{`,
+/// then mapping the entire clause to a [Statement].
+pub fn expression(input: &str) -> IResult<&str, Vec<LocatedStatement>> {
+    many0(
+        pair(
+            take_until("{{").map(|skipped: &str| skipped.len()),
+            consumed(alt((
+                curly_args.map(|exp| Statement::Expression(exp)),
+                named_expression.map(|(var, exp)| Statement::NamedExpression(var, exp)),
+                block_args.map(|((mut opening_len, args), children)| {
+                    let mut children = Statements(children);
+                    children.adjust(&mut opening_len);
+                    Statement::Block(args, children)
+                }),
+            ))),
+        )
+        .map(|(skipped, (consumed, statement))| {
+            LocatedStatement(skipped..(skipped + consumed.len()), statement)
+        }),
+    )(input)
+}
+
+/// A parsed section of text.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Statement<'a> {
+    Expression(Vec<&'a str>),
+    NamedExpression(&'a str, Vec<(&'a str, Vec<&'a str>)>),
+    Block(Vec<&'a str>, Statements<'a>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct LocatedStatement<'a>(Range<usize>, Statement<'a>);
+/// NewType of [Vec<Statement>] that implements [TryFrom] to parse an entire text into a collection of statements.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Statements<'a>(Vec<LocatedStatement<'a>>);
+
+impl Statements<'_> {
+    /// Adjusts a statements location by the length of preceding statements,
+    /// so that the overall location is correct in a larger body of text.
+    fn adjust(&mut self, count: &mut usize) {
+        let skipped = *count;
+
+        self.shift(skipped);
+
+        let mut count = 0;
+
+        for stmt in self.iter_mut() {
+            let old_count = count;
+            count += stmt.0.end - skipped;
+            stmt.0 = (stmt.0.start + old_count)..(stmt.0.end + old_count);
+        }
+    }
+
+    fn shift(&mut self, shift: usize) {
+        for stmt in self.iter_mut() {
+            match &mut stmt.1 {
+                Statement::Block(_, sub_stmts) => sub_stmts.shift(stmt.0.start),
+                _ => (),
+            }
+            stmt.0 = (stmt.0.start + shift)..(stmt.0.end + shift);
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a str> for Statements<'a> {
+    type Error = anyhow::Error;
+    /// Parses a &str into a collection as a [Vec<Statement] NewType.
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        match expression(value) {
+            Ok((_, statements)) => {
+                let mut stmts = Statements(statements);
+                stmts.adjust(&mut 0);
+                Ok(stmts)
+            }
+            Err(e) => Err(e.map(|e| Error::new(e.input.to_string(), e.code)).into()),
+        }
+    }
+}
+
+impl<'a> Deref for Statements<'a> {
+    type Target = Vec<LocatedStatement<'a>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> DerefMut for Statements<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// Opening tag for a block element
 fn opening(i: &str) -> IResult<&str, (&str, Option<&str>, &str, &str)> {
@@ -454,6 +667,73 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_statements() {
+        let stmts = Statements::try_from(
+            "junk {{# one two three }} more junk {{ four five six }}{{ seven eight nine }} so much junk {{/#}}",
+        )
+        .unwrap();
+        assert_eq!(
+            stmts,
+            Statements(vec![LocatedStatement(
+                5..97,
+                Statement::Block(
+                    vec!["one", "two", "three"],
+                    Statements(vec![
+                        LocatedStatement(
+                            36..55,
+                            Statement::Expression(vec!["four", "five", "six"])
+                        ),
+                        LocatedStatement(
+                            55..77,
+                            Statement::Expression(vec!["seven", "eight", "nine"])
+                        )
+                    ])
+                )
+            )])
+        );
+
+        assert_eq!(
+            Statements::try_from("{{# one two three }}{{/#}}").unwrap(),
+            Statements(vec![LocatedStatement(
+                0..26,
+                Statement::Block(vec!["one", "two", "three"], Statements(vec![]))
+            )])
+        );
+
+        assert_eq!(
+            Statements::try_from("{{* table rows=[one two three] cols=[four five six] }}").unwrap(),
+            Statements(vec![LocatedStatement(
+                0..54,
+                Statement::NamedExpression(
+                    "table",
+                    vec![
+                        ("rows", vec!["one", "two", "three"]),
+                        ("cols", vec!["four", "five", "six"])
+                    ]
+                )
+            )])
+        );
+
+        assert_eq!(
+            Statements::try_from("{{# one two three }}{{* table rows=[four five six] cols=[seven eight nine] }}{{# ten eleven twelve }}{{ thirteen fourteen fifteen }}{{/#}}{{/#}}").unwrap(), 
+            Statements(vec![LocatedStatement(0..144, Statement::Block(
+                    vec!["one", "two", "three"], 
+                    Statements(vec![LocatedStatement(20..77, Statement::NamedExpression(
+                                "table", 
+                                vec![
+                                    ("rows", vec!["four", "five", "six"]), 
+                                    ("cols", vec!["seven", "eight", "nine"])
+                                    ]
+                                )),
+                        LocatedStatement(77..138, Statement::Block(vec!["ten", "eleven", "twelve"], Statements(vec![
+                        LocatedStatement(101..132, Statement::Expression(vec!["thirteen", "fourteen", "fifteen"]))])))
+                        ])
+                )
+            )])
+        );
+    }
 
     #[test]
     fn test_nom() {
