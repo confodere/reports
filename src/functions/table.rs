@@ -36,11 +36,11 @@ impl TryFrom<Table<'_>> for String {
             table.push_str(" --- |");
         }
         for row in &value.rows {
-            let ctx = value.ctx + row.clone();
+            let ctx = value.ctx.clone() + row.clone();
             // Row Heading
-            table.push_str(&format!("\n| {} |", &row.to_string()));
+            table.push_str(&format!("\n| {} |", row.to_string()));
             for col in &value.cols {
-                let mut ctx = &ctx + col.clone();
+                let mut ctx = ctx.clone() + col.clone();
                 table.push_str(&format!(
                     " {} |",
                     &String::try_from(Command::try_from(&mut ctx)?)?

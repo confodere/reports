@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Error, Result};
 use chrono::NaiveDate;
 use lazy_static::lazy_static;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
-use std::ops::Add;
+use std::ops::{Add, AddAssign};
 use std::rc::Rc;
 
+use crate::functions::table::Table;
 use crate::functions::{AvgFreq, Change, Fig};
 use crate::{Data, DisplayType, TimeFrequency};
 
@@ -28,7 +29,7 @@ lazy_static! {
         .collect()
     };
     static ref FREQUENCIES: HashSet<&'static str> = {
-        ["daily", "weekly", "monthly", "quarterly", "yearly"]
+        ["Daily", "Weekly", "Monthly", "Quarterly", "Yearly"]
             .iter()
             .cloned()
             .collect()
@@ -100,18 +101,42 @@ pub enum ExpressionVariable<'a> {
     DisplayType(DisplayType),
 }
 
-impl<'a> Add<ExpressionVariable<'a>> for &Expression<'a> {
-    type Output = Expression<'a>;
+impl<'a> ExpressionVariable<'a> {
+    pub fn try_new(s: &'a str, date: &NaiveDate) -> Result<Self> {
+        if COMMANDS.contains(s) {
+            Ok(ExpressionVariable::Command(s))
+        } else if FREQUENCIES.contains(s) {
+            Ok(ExpressionVariable::TimeFrequency(
+                s.parse::<TimeFrequency>()?,
+            ))
+        } else if DISPLAY_TYPES.contains(s) {
+            Ok(ExpressionVariable::DisplayType(s.parse::<DisplayType>()?))
+        } else if DATA_NAMES.contains(&s.to_string()) {
+            Ok(ExpressionVariable::Data(Data::read(&s.to_string(), date)?))
+        } else {
+            return Err(anyhow!("Unknown key word: {}", s));
+        }
+    }
+}
+
+impl<'a> AddAssign<ExpressionVariable<'a>> for Expression<'a> {
+    fn add_assign(&mut self, rhs: ExpressionVariable<'a>) {
+        match rhs {
+            ExpressionVariable::Command(command) => self.set_command(command),
+            ExpressionVariable::TimeFrequency(frequency) => self.set_frequency(frequency),
+            ExpressionVariable::Data(data) => self.set_data(data),
+            ExpressionVariable::DisplayType(display_type) => self.set_display_type(display_type),
+        }
+    }
+}
+
+impl<'a> Add<ExpressionVariable<'a>> for Expression<'a> {
+    type Output = Self;
 
     fn add(self, rhs: ExpressionVariable<'a>) -> Self::Output {
-        let mut context = self.clone();
-        match rhs {
-            ExpressionVariable::Command(command) => context.set_command(command),
-            ExpressionVariable::TimeFrequency(frequency) => context.set_frequency(frequency),
-            ExpressionVariable::Data(data) => context.set_data(data),
-            ExpressionVariable::DisplayType(display_type) => context.set_display_type(display_type),
-        }
-        context
+        let mut expr = self;
+        expr += rhs;
+        expr
     }
 }
 
@@ -129,7 +154,10 @@ impl Display for ExpressionVariable<'_> {
 /// The entire context for an expression.  
 /// Contains a collection of command names, and optional values of [TimeFrequency], [Data], and [DisplayType].  
 ///
-/// Iterable to produce [Command]s from the collection of command names in *reverse order*.
+/// Values can be filled with either the methods `set_command`, `set_frequency`, `set_data`, `set_display_type`,
+///  or by using either the [Add] or [AddAssign] ops with a [ExpressionVariable].
+///
+/// Convertible to [Command] when required values are filled for the relevant command.
 #[derive(Debug, Clone)]
 pub struct Expression<'a> {
     pub command: Option<&'a str>,
@@ -164,29 +192,12 @@ impl<'a> Expression<'a> {
     pub fn set_command(&mut self, command: &'a str) {
         self.command = Some(command);
     }
-    /// Matches a &str against static collections,
-    ///  and adds passed structure to the expression context accordingly.
-    pub fn recognize(&mut self, s: &'a str, date: &NaiveDate) -> Result<()> {
-        if COMMANDS.contains(s) {
-            self.set_command(s)
-        } else if FREQUENCIES.contains(s) {
-            self.set_frequency(s.parse::<TimeFrequency>()?)
-        } else if DISPLAY_TYPES.contains(s) {
-            self.set_display_type(s.parse::<DisplayType>()?)
-        } else if DATA_NAMES.contains(&s.to_string()) {
-            self.set_data(Data::read(&s.to_string(), date)?)
-        } else {
-            return Err(anyhow!("Unknown key word: {}", s));
-        }
-
-        Ok(())
-    }
 }
 
 impl TryFrom<&mut Expression<'_>> for Command {
     type Error = Error;
 
-    /// Tries to convert [ExpressionContext] into [Command] by matching a list of commands.
+    /// Tries to convert [Expression] into [Command] by matching a list of commands.
     fn try_from(value: &mut Expression<'_>) -> Result<Self, Self::Error> {
         match value.command {
             Some("fig") => Ok(Command::Fig(CommandDisplay::try_from(&*value)?)),
@@ -248,17 +259,43 @@ impl TryFrom<&Expression<'_>> for Rc<Data> {
     }
 }
 
-pub struct ExpressionCollection<'a> {
-    pub command: &'a str,
-    pub collection: Vec<ExpressionVariable<'a>>,
+pub struct ExpressionNamedCollection<'a> {
+    command: Option<&'a str>,
+    collections: HashMap<&'a str, Vec<ExpressionVariable<'a>>>,
+    ctx: &'a Expression<'a>,
 }
 
-impl<'a> IntoIterator for ExpressionCollection<'a> {
-    type Item = ExpressionVariable<'a>;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
+impl<'a> ExpressionNamedCollection<'a> {
+    pub fn new(ctx: &'a Expression) -> Self {
+        ExpressionNamedCollection {
+            command: None,
+            collections: HashMap::new(),
+            ctx,
+        }
+    }
+    /// Set the expression's commmand name
+    pub fn set_command(&mut self, command: &'a str) {
+        self.command = Some(command)
+    }
+    /// Add to a named collection
+    pub fn add_expression_variable(&mut self, name: &'a str, var: ExpressionVariable<'a>) {
+        self.collections.entry(name).or_insert(vec![]).push(var);
+    }
+}
 
-    fn into_iter(self) -> Self::IntoIter {
-        self.collection.into_iter()
+impl<'a> TryFrom<ExpressionNamedCollection<'a>> for Table<'a> {
+    type Error = Error;
+
+    fn try_from(mut value: ExpressionNamedCollection<'a>) -> Result<Self, Self::Error> {
+        if let Some(rows) = value.collections.remove("rows") {
+            if let Some(cols) = value.collections.remove("cols") {
+                Ok(Table::new(rows.to_vec(), cols, value.ctx))
+            } else {
+                Err(anyhow!("Table missing cols"))
+            }
+        } else {
+            Err(anyhow!("Table missing rows"))
+        }
     }
 }
 
@@ -270,12 +307,25 @@ mod tests {
     #[test]
     fn test_expression() {
         let mut expr = Expression::new();
+
         expr.set_frequency(TimeFrequency::Weekly);
         expr.set_data(
             Data::read(&"cat_purrs".to_string(), &NaiveDate::from_ymd(2022, 2, 4)).unwrap(),
         );
         expr.set_command("change");
 
+        let result = String::try_from(Command::try_from(&mut expr).unwrap()).unwrap();
+
+        assert_eq!(result, "25.0%".to_string());
+    }
+
+    #[test]
+    fn test_expression_variable() {
+        let mut expr = Expression::new();
+        let date = NaiveDate::from_ymd(2022, 2, 4);
+        for var in ["Weekly", "change", "cat_purrs"] {
+            expr += ExpressionVariable::try_new(var, &date).unwrap()
+        }
         let result = String::try_from(Command::try_from(&mut expr).unwrap()).unwrap();
 
         assert_eq!(result, "25.0%".to_string());
