@@ -433,7 +433,7 @@ impl Display for Point {
     }
 }
 
-#[derive(Serialize, Debug, Clone, Copy, Deserialize)]
+#[derive(Serialize, Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 pub enum DisplayType {
     Rounded,
     DescribedRounded,

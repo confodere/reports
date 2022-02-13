@@ -10,6 +10,7 @@ use mdbook::preprocess::Preprocessor;
 use toml::{map::Map, value::Value};
 
 pub mod block;
+pub mod tree;
 
 pub struct Processor;
 

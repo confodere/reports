@@ -93,11 +93,11 @@ impl TryFrom<Command> for String {
 }
 
 /// Provides variables that can be added to [Expression]
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExpressionVariable<'a> {
     Command(&'a str),
     TimeFrequency(TimeFrequency),
-    Data(Data),
+    Data(Rc<Data>),
     DisplayType(DisplayType),
 }
 
@@ -112,7 +112,10 @@ impl<'a> ExpressionVariable<'a> {
         } else if DISPLAY_TYPES.contains(s) {
             Ok(ExpressionVariable::DisplayType(s.parse::<DisplayType>()?))
         } else if DATA_NAMES.contains(&s.to_string()) {
-            Ok(ExpressionVariable::Data(Data::read(&s.to_string(), date)?))
+            Ok(ExpressionVariable::Data(Rc::new(Data::read(
+                &s.to_string(),
+                date,
+            )?)))
         } else {
             return Err(anyhow!("Unknown key word: {}", s));
         }
@@ -124,7 +127,7 @@ impl<'a> AddAssign<ExpressionVariable<'a>> for Expression<'a> {
         match rhs {
             ExpressionVariable::Command(command) => self.set_command(command),
             ExpressionVariable::TimeFrequency(frequency) => self.set_frequency(frequency),
-            ExpressionVariable::Data(data) => self.set_data(data),
+            ExpressionVariable::Data(data) => self.set_data(&data),
             ExpressionVariable::DisplayType(display_type) => self.set_display_type(display_type),
         }
     }
@@ -158,7 +161,7 @@ impl Display for ExpressionVariable<'_> {
 ///  or by using either the [Add] or [AddAssign] ops with a [ExpressionVariable].
 ///
 /// Convertible to [Command] when required values are filled for the relevant command.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expression<'a> {
     pub command: Option<&'a str>,
     pub frequency: Option<TimeFrequency>,
@@ -181,8 +184,8 @@ impl<'a> Expression<'a> {
         self.frequency = Some(frequency);
     }
     /// Set the expression's [Data].
-    pub fn set_data(&mut self, data: Data) {
-        self.data = Some(Rc::new(data));
+    pub fn set_data(&mut self, data: &Rc<Data>) {
+        self.data = Some(Rc::clone(&data));
     }
     /// Set the expression's [DisplayType].
     pub fn set_display_type(&mut self, display_type: DisplayType) {
@@ -194,11 +197,21 @@ impl<'a> Expression<'a> {
     }
 }
 
-impl TryFrom<&mut Expression<'_>> for Command {
+impl<'a> From<Vec<ExpressionVariable<'a>>> for Expression<'a> {
+    fn from(vars: Vec<ExpressionVariable<'a>>) -> Self {
+        let mut expr = Expression::new();
+        for var in vars {
+            expr += var;
+        }
+        expr
+    }
+}
+
+impl TryFrom<&Expression<'_>> for Command {
     type Error = Error;
 
     /// Tries to convert [Expression] into [Command] by matching a list of commands.
-    fn try_from(value: &mut Expression<'_>) -> Result<Self, Self::Error> {
+    fn try_from(value: &Expression<'_>) -> Result<Self, Self::Error> {
         match value.command {
             Some("fig") => Ok(Command::Fig(CommandDisplay::try_from(&*value)?)),
             Some("name") => Ok(Command::Name(Rc::<Data>::try_from(&*value)?)),
@@ -260,36 +273,36 @@ impl TryFrom<&Expression<'_>> for Rc<Data> {
 }
 
 pub struct ExpressionNamedCollection<'a> {
-    command: Option<&'a str>,
-    collections: HashMap<&'a str, Vec<ExpressionVariable<'a>>>,
+    command: &'a str,
+    collections: &'a HashMap<&'a str, Vec<ExpressionVariable<'a>>>,
     ctx: &'a Expression<'a>,
 }
 
 impl<'a> ExpressionNamedCollection<'a> {
-    pub fn new(ctx: &'a Expression) -> Self {
+    pub fn new(
+        command: &'a str,
+        collections: &'a HashMap<&'a str, Vec<ExpressionVariable<'a>>>,
+        ctx: &'a Expression,
+    ) -> Self {
         ExpressionNamedCollection {
-            command: None,
-            collections: HashMap::new(),
+            command,
+            collections,
             ctx,
         }
     }
     /// Set the expression's commmand name
     pub fn set_command(&mut self, command: &'a str) {
-        self.command = Some(command)
-    }
-    /// Add to a named collection
-    pub fn add_expression_variable(&mut self, name: &'a str, var: ExpressionVariable<'a>) {
-        self.collections.entry(name).or_insert(vec![]).push(var);
+        self.command = command
     }
 }
 
 impl<'a> TryFrom<ExpressionNamedCollection<'a>> for Table<'a> {
     type Error = Error;
 
-    fn try_from(mut value: ExpressionNamedCollection<'a>) -> Result<Self, Self::Error> {
-        if let Some(rows) = value.collections.remove("rows") {
-            if let Some(cols) = value.collections.remove("cols") {
-                Ok(Table::new(rows.to_vec(), cols, value.ctx))
+    fn try_from(value: ExpressionNamedCollection<'a>) -> Result<Self, Self::Error> {
+        if let Some(rows) = value.collections.get("rows") {
+            if let Some(cols) = value.collections.get("cols") {
+                Ok(Table::new(rows.to_vec(), cols.clone(), value.ctx))
             } else {
                 Err(anyhow!("Table missing cols"))
             }
@@ -297,6 +310,12 @@ impl<'a> TryFrom<ExpressionNamedCollection<'a>> for Table<'a> {
             Err(anyhow!("Table missing rows"))
         }
     }
+}
+
+pub enum ParsedStatement<'a> {
+    Expression(Expression<'a>),
+    ExpressionNamedCollection(ExpressionNamedCollection<'a>),
+    Block(Vec<ExpressionVariable<'a>>, Vec<Expression<'a>>),
 }
 
 #[cfg(test)]
@@ -309,12 +328,12 @@ mod tests {
         let mut expr = Expression::new();
 
         expr.set_frequency(TimeFrequency::Weekly);
-        expr.set_data(
+        expr.set_data(&Rc::new(
             Data::read(&"cat_purrs".to_string(), &NaiveDate::from_ymd(2022, 2, 4)).unwrap(),
-        );
+        ));
         expr.set_command("change");
 
-        let result = String::try_from(Command::try_from(&mut expr).unwrap()).unwrap();
+        let result = String::try_from(Command::try_from(&expr).unwrap()).unwrap();
 
         assert_eq!(result, "25.0%".to_string());
     }
@@ -326,7 +345,7 @@ mod tests {
         for var in ["Weekly", "change", "cat_purrs"] {
             expr += ExpressionVariable::try_new(var, &date).unwrap()
         }
-        let result = String::try_from(Command::try_from(&mut expr).unwrap()).unwrap();
+        let result = String::try_from(Command::try_from(&expr).unwrap()).unwrap();
 
         assert_eq!(result, "25.0%".to_string());
     }

@@ -40,10 +40,10 @@ impl TryFrom<Table<'_>> for String {
             // Row Heading
             table.push_str(&format!("\n| {} |", row.to_string()));
             for col in &value.cols {
-                let mut ctx = ctx.clone() + col.clone();
+                let ctx = ctx.clone() + col.clone();
                 table.push_str(&format!(
                     " {} |",
-                    &String::try_from(Command::try_from(&mut ctx)?)?
+                    &String::try_from(Command::try_from(&ctx)?)?
                 ));
             }
         }
@@ -58,12 +58,15 @@ mod tests {
 
     use super::*;
     use crate::{Data, TimeFrequency};
+    use std::rc::Rc;
 
     #[test]
     fn test_table() {
         let date = NaiveDate::from_ymd(2022, 2, 4);
         let mut ctx = Expression::new();
-        ctx.set_data(Data::read(&"cat_purrs".to_string(), &date).unwrap());
+        ctx.set_data(&Rc::new(
+            Data::read(&"cat_purrs".to_string(), &date).unwrap(),
+        ));
         let cols = vec![
             ExpressionVariable::TimeFrequency(TimeFrequency::Weekly),
             ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly),

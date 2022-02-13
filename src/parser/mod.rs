@@ -1,9 +1,9 @@
-use std::ops::{Deref, DerefMut, Range};
-use std::str::FromStr;
-
+use crate::pre_process::block::ExpressionVariable;
+use crate::pre_process::tree::{Component, Node};
 use crate::{AvgFreq, Change, Data, DisplayType, Metric, TimeFrequency};
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
+use nom::combinator::map_res;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_until},
@@ -13,9 +13,13 @@ use nom::{
     error::{ErrorKind, ParseError},
     multi::{many0, separated_list0, separated_list1},
     sequence::{delimited, pair, separated_pair, terminated, tuple},
-    Err, FindSubstring, IResult, InputLength, Parser,
+    AsChar, Err, FindSubstring, IResult, InputLength, InputTakeAtPosition, Parser,
 };
+use std::collections::HashMap;
 use std::iter;
+use std::ops::{Deref, DerefMut, Range};
+use std::rc::Rc;
+use std::str::FromStr;
 
 pub mod substitute;
 
@@ -31,7 +35,21 @@ pub mod substitute;
 /// assert_eq!(arg_list(" "), Err(Err::Error((Error{input: " ", code: ErrorKind::AlphaNumeric}))));
 /// ```
 pub fn arg_list(input: &str) -> IResult<&str, Vec<&str>> {
-    separated_list1(tag(" "), alphanumeric1)(input)
+    separated_list1(tag(" "), not_ending)(input)
+}
+
+pub fn not_ending<T, E: ParseError<T>>(input: T) -> IResult<T, T, E>
+where
+    T: InputTakeAtPosition,
+    <T as InputTakeAtPosition>::Item: AsChar,
+{
+    input.split_at_position1_complete(
+        |item| {
+            let c = item.as_char();
+            !c.is_ascii_alphabetic() && ((c.to_string() == "}") || (c.is_whitespace()))
+        },
+        ErrorKind::AlphaNumeric,
+    )
 }
 
 /// A combinator that wraps an `inner` parser with a leading `start` tag and an ending `end`,
@@ -126,17 +144,18 @@ pub fn named_expression(input: &str) -> IResult<&str, (&str, Vec<(&str, Vec<&str
 /// assert_eq!(block_args("{{# one two three }}{{ four five six }}{{/#}}"), Ok(("", (vec!["one", "two", "three"], vec![Statement::Expression(vec!["four", "five", "six"])]))));
 /// assert_eq!(block_args("{{# one two three }}{{* table rows=[four five six] cols=[seven eight nine] }}{{/#}}"), Ok(("", (vec!["one", "two", "three"], vec![Statement::NamedExpression("table", vec![("rows", vec!["four", "five", "six"]), ("cols", vec!["seven", "eight", "nine"])])]))));
 /// ```
-pub fn block_args(input: &str) -> IResult<&str, ((usize, Vec<&str>), Vec<LocatedStatement>)> {
+pub fn block_args(input: &str) -> IResult<&str, ((usize, Vec<&str>), Vec<Rc<Node>>)> {
     terminated(
         pair(
+            // Passing on the consumed length is so that children of a block can adjust their positioning by the size of the opening clause
             consumed(curly_block_args).map(|(consumed, args)| (consumed.len(), args)),
-            terminated(expression, take_until("{{/#}}")),
+            terminated(expression_new, take_until("{{/#}}")),
         ),
         tag("{{/#}}"),
     )(input)
 }
 
-/// Returns a matched collection of statements by:  
+/*/// Returns a matched collection of statements by:
 /// taking until the start of an open/close clause i.e. `{{`,
 /// then mapping the entire clause to a [Statement].
 pub fn expression(input: &str) -> IResult<&str, Vec<LocatedStatement>> {
@@ -145,7 +164,7 @@ pub fn expression(input: &str) -> IResult<&str, Vec<LocatedStatement>> {
             take_until("{{").map(|skipped: &str| skipped.len()),
             consumed(alt((
                 curly_args.map(|exp| Statement::Expression(exp)),
-                named_expression.map(|(var, exp)| Statement::NamedExpression(var, exp)),
+                named_expression.map(|(var, exp)| Statement::ExpressionNamedCollection(var, exp)),
                 block_args.map(|((mut opening_len, args), children)| {
                     let mut children = Statements(children);
                     children.adjust(&mut opening_len);
@@ -153,17 +172,92 @@ pub fn expression(input: &str) -> IResult<&str, Vec<LocatedStatement>> {
                 }),
             ))),
         )
+        // Skipped refers to ignored text before an opening clause
+        // Consumed refers to the text in an expression clause
+        // By creating a [LocatedStatement] with these values in a [Range<usize>],
+        // they track the relative positioning of a clause
         .map(|(skipped, (consumed, statement))| {
             LocatedStatement(skipped..(skipped + consumed.len()), statement)
         }),
     )(input)
+}*/
+
+pub fn expression_new(input: &str) -> IResult<&str, Vec<Rc<Node>>> {
+    let (leftover, tree) = many0(pair(
+        take_until("{{").map(|filler| Component::Filler(filler)),
+        alt((
+            expression_tree,
+            named_expression_tree,
+            block_expression_tree,
+        )),
+    ))(input)?;
+    let mut nodes = Vec::new();
+    for (filler, item) in tree {
+        nodes.push(Rc::new(Node::new(filler)));
+        nodes.push(item);
+    }
+    Ok((leftover, nodes))
+}
+
+pub fn expression_tree(input: &str) -> IResult<&str, Rc<Node>> {
+    let date = NaiveDate::from_ymd(2022, 2, 4);
+    let (leftover, component) = map_res::<_, _, _, _, anyhow::Error, _, _>(curly_args, |exp| {
+        Ok(Component::Vars(
+            exp.into_iter()
+                .map(|arg| ExpressionVariable::try_new(arg, &date))
+                .collect::<Result<Vec<ExpressionVariable>>>()?,
+        ))
+    })(input)?;
+    Ok((leftover, Rc::new(Node::new(component))))
+}
+
+pub fn named_expression_tree(input: &str) -> IResult<&str, Rc<Node>> {
+    let date = NaiveDate::from_ymd(2022, 2, 4);
+
+    let (leftover, component) =
+        map_res::<_, _, _, _, anyhow::Error, _, _>(named_expression, |(var, exp)| {
+            Ok(Component::Collection(
+                var,
+                HashMap::from_iter({
+                    exp.into_iter()
+                        .map(|(key, val)| {
+                            Ok((
+                                key,
+                                val.into_iter()
+                                    .map(|v| ExpressionVariable::try_new(v, &date))
+                                    .collect::<Result<Vec<ExpressionVariable>>>()?,
+                            ))
+                        })
+                        .collect::<Result<Vec<(&str, Vec<ExpressionVariable>)>>>()?
+                }),
+            ))
+        })(input)?;
+    Ok((leftover, Rc::new(Node::new(component))))
+}
+
+pub fn block_expression_tree(input: &str) -> IResult<&str, Rc<Node>> {
+    let date = NaiveDate::from_ymd(2022, 2, 4);
+    let (leftover, node) =
+        map_res::<_, _, _, _, anyhow::Error, _, _>(block_args, |((_, args), nodes)| {
+            let parent = Rc::new(Node::new(Component::Vars(
+                args.into_iter()
+                    .map(|arg| ExpressionVariable::try_new(arg, &date))
+                    .collect::<Result<Vec<ExpressionVariable>>>()?,
+            )));
+            for child in nodes {
+                Node::add_child(&parent, &child)
+            }
+            Ok(parent)
+        })(input)?;
+
+    Ok((leftover, node))
 }
 
 /// A parsed section of text.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Statement<'a> {
     Expression(Vec<&'a str>),
-    NamedExpression(&'a str, Vec<(&'a str, Vec<&'a str>)>),
+    ExpressionNamedCollection(&'a str, Vec<(&'a str, Vec<&'a str>)>),
     Block(Vec<&'a str>, Statements<'a>),
 }
 
@@ -190,6 +284,10 @@ impl Statements<'_> {
         }
     }
 
+    /// Shifts every child of a block by the blocks [Range] `start`,
+    /// so that children can reflect the padding prior to a parent's position.
+    ///
+    /// Then shifts every top level statement by `shift`.
     fn shift(&mut self, shift: usize) {
         for stmt in self.iter_mut() {
             match &mut stmt.1 {
@@ -201,6 +299,7 @@ impl Statements<'_> {
     }
 }
 
+/*
 impl<'a> TryFrom<&'a str> for Statements<'a> {
     type Error = anyhow::Error;
     /// Parses a &str into a collection as a [Vec<Statement] NewType.
@@ -214,7 +313,7 @@ impl<'a> TryFrom<&'a str> for Statements<'a> {
             Err(e) => Err(e.map(|e| Error::new(e.input.to_string(), e.code)).into()),
         }
     }
-}
+}*/
 
 impl<'a> Deref for Statements<'a> {
     type Target = Vec<LocatedStatement<'a>>;
@@ -669,11 +768,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_expression() {
+        let (leftover, nodes) = expression_tree("{{ Weekly cat_purrs change }}").unwrap();
+        eprintln!("{leftover} {:?}", nodes);
+        assert!(leftover.len() == 0);
+    }
+
+    #[test]
     fn test_statements() {
-        let stmts = Statements::try_from(
-            "junk {{# one two three }} more junk {{ four five six }}{{ seven eight nine }} so much junk {{/#}}",
-        )
-        .unwrap();
+        let (leftover, nodes) = expression_new(
+            "junk {{# cat_purrs }} more junk {{ Weekly change }}{{ Quarterly change }} so much junk {{/#}}",
+        ).unwrap();
+        let top = Rc::new(Node::new(Component::Filler("")));
+        for node in nodes {
+            Node::add_child(&top, &node)
+        }
+        Node::add_child(&top, &Rc::new(Node::new(Component::Filler(leftover))));
+        let content = top.render().unwrap();
+        eprintln!("{content}");
+        assert!(leftover.len() == 0);
+        /*
         assert_eq!(
             stmts,
             Statements(vec![LocatedStatement(
@@ -706,7 +820,7 @@ mod tests {
             Statements::try_from("{{* table rows=[one two three] cols=[four five six] }}").unwrap(),
             Statements(vec![LocatedStatement(
                 0..54,
-                Statement::NamedExpression(
+                Statement::ExpressionNamedCollection(
                     "table",
                     vec![
                         ("rows", vec!["one", "two", "three"]),
@@ -717,13 +831,13 @@ mod tests {
         );
 
         assert_eq!(
-            Statements::try_from("{{# one two three }}{{* table rows=[four five six] cols=[seven eight nine] }}{{# ten eleven twelve }}{{ thirteen fourteen fifteen }}{{/#}}{{/#}}").unwrap(), 
+            Statements::try_from("{{# one two three }}{{* table rows=[four five six] cols=[seven eight nine] }}{{# ten eleven twelve }}{{ thirteen fourteen fifteen }}{{/#}}{{/#}}").unwrap(),
             Statements(vec![LocatedStatement(0..144, Statement::Block(
-                    vec!["one", "two", "three"], 
-                    Statements(vec![LocatedStatement(20..77, Statement::NamedExpression(
-                                "table", 
+                    vec!["one", "two", "three"],
+                    Statements(vec![LocatedStatement(20..77, Statement::ExpressionNamedCollection(
+                                "table",
                                 vec![
-                                    ("rows", vec!["four", "five", "six"]), 
+                                    ("rows", vec!["four", "five", "six"]),
                                     ("cols", vec!["seven", "eight", "nine"])
                                     ]
                                 )),
@@ -733,6 +847,7 @@ mod tests {
                 )
             )])
         );
+        */
     }
 
     #[test]
