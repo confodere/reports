@@ -7,11 +7,11 @@ use crate::functions::{AvgFreq, Change, Figure, ShowFigure};
 pub use crate::time_span::{TimeFrequency, TimeSpan};
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
+use functions::display::RenderContext;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{self, Display};
-use std::str::FromStr;
 
 const DATABASE_FILE: &str = "ignore/data.db";
 
@@ -156,22 +156,6 @@ pub struct ComputedStringMetric {
     pub fig: String,
     pub time_periods: Vec<String>,
     pub partial_name: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum RenderContext {
-    Words,
-    Numbers,
-}
-
-impl RenderContext {
-    fn _from_str(s: &str) -> Option<Self> {
-        Some(match s {
-            "Words" => RenderContext::Words,
-            "Numbers" => RenderContext::Numbers,
-            _ => return None,
-        })
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Default)]
@@ -415,8 +399,8 @@ impl Figure for Point {
         self.value
     }
 
-    fn display_type(&self) -> DisplayType {
-        DisplayType::Rounded
+    fn display_type(&self) -> RenderContext {
+        RenderContext::Numbers
     }
 }
 
@@ -429,33 +413,6 @@ impl Point {
 impl Display for Point {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         ShowFigure(self).fmt(f)
-    }
-}
-
-#[derive(Serialize, Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-pub enum DisplayType {
-    Rounded,
-    DescribedRounded,
-    Percentage,
-    DescribedPercentage,
-}
-
-impl Display for DisplayType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:#?}", self)
-    }
-}
-
-impl FromStr for DisplayType {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "rounded" => Ok(Self::Rounded),
-            "describedrounded" => Ok(Self::DescribedRounded),
-            "percentage" => Ok(Self::Percentage),
-            "describedpercentage" => Ok(Self::DescribedPercentage),
-            _ => Err(anyhow!("{} is not a valid DisplayType", s)),
-        }
     }
 }
 

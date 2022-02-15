@@ -175,8 +175,8 @@ mod tests {
     fn test_pre_process_blocks() {
         let mut ch = Chapter::new(
             "test",
-            "{{#cat_purrs}}
-        Weekly change in cat purrs was {{change Weekly describedpercentage}}.
+            "{{#cat_purrs }}
+        Weekly change in cat purrs was {{change Weekly Words }}.
         Quarterly change in cat purrs was {{change Quarterly}} compared to {{prev Quarterly}}.{{/#}}
         "
             .to_string(),
@@ -200,16 +200,16 @@ mod tests {
     fn test_block_vars() {
         let mut ch = Chapter::new(
             "test",
-            "{{# fish_zooms describedpercentage }}
-            {{avg_freq Daily describedrounded}}
-            {{change Weekly}}
+            "{{# fish_zooms  }}
+            {{avg_freq Daily Words }}
+            {{change Weekly Words}}
             {{name}}
             {{description}}
             {{span}}
             {{/#}}
             
-            {{# cat_purrs describedpercentage }}
-            {{name}} are {{change Quarterly}} since {{prev Quarterly}}
+            {{# cat_purrs Words Quarterly }}
+            {{name}} are {{change}} since {{prev}}
             {{/#}}"
                 .to_string(),
             "test.md",
@@ -240,11 +240,11 @@ mod tests {
             "test",
             "
 # Sample
-{{# describedpercentage }}
-- {{# website_visits  }}Total website users were {{change Weekly}}, we are now averaging {{avg_freq Daily describedrounded}}.
+
+- {{# website_visits Words }}Total website users were {{change Weekly}}, we are now averaging {{avg_freq Daily }}.
 - {{name}} are {{change Yearly }} compared to this same reporting period last year {{prev Yearly}}.{{/#}}
             
-- {{# cat_purrs  }}{{name}} are {{change Quarterly}} since {{prev Quarterly}}{{/#}}{{/#}}"
+- {{# cat_purrs Words }}{{name}} are {{change Quarterly}} since {{prev Quarterly}}{{/#}}"
                 .to_string(),
             "test.md",
             vec![],

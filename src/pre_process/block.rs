@@ -9,7 +9,7 @@ use std::rc::Rc;
 use crate::functions::table::Table;
 use crate::functions::{AvgFreq, Change, Fig};
 use crate::parser;
-use crate::{Data, DisplayType, TimeFrequency};
+use crate::{Data, RenderContext, TimeFrequency};
 
 use super::tree::Component;
 
@@ -37,29 +37,20 @@ lazy_static! {
             .cloned()
             .collect()
     };
-    static ref DISPLAY_TYPES: HashSet<&'static str> = {
-        [
-            "rounded",
-            "describedrounded",
-            "percentage",
-            "describedpercentage",
-        ]
-        .iter()
-        .cloned()
-        .collect()
-    };
+    static ref DISPLAY_TYPES: HashSet<&'static str> =
+        ["Words", "Numbers",].iter().cloned().collect();
     static ref DATA_NAMES: HashSet<String> = Data::read_names().unwrap().iter().cloned().collect();
 }
 
 pub struct CommandFreq {
     pub data: Rc<Data>,
     pub frequency: TimeFrequency,
-    pub display_type: Option<DisplayType>,
+    pub display_type: Option<RenderContext>,
 }
 
 pub struct CommandDisplay {
     pub data: Rc<Data>,
-    pub display_type: Option<DisplayType>,
+    pub display_type: Option<RenderContext>,
 }
 
 pub enum Command {
@@ -102,7 +93,7 @@ pub enum ExpressionVariable {
     TimeFrequency(TimeFrequency),
     DataName(String),
     Date(NaiveDate),
-    DisplayType(DisplayType),
+    RenderContext(RenderContext),
 }
 
 impl ExpressionVariable {
@@ -114,7 +105,9 @@ impl ExpressionVariable {
                 s.parse::<TimeFrequency>()?,
             ))
         } else if DISPLAY_TYPES.contains(s) {
-            Ok(ExpressionVariable::DisplayType(s.parse::<DisplayType>()?))
+            Ok(ExpressionVariable::RenderContext(
+                s.parse::<RenderContext>()?,
+            ))
         } else if DATA_NAMES.contains(&s.to_string()) {
             Ok(ExpressionVariable::DataName(s.to_string()))
         } else {
@@ -133,7 +126,7 @@ impl AddAssign<ExpressionVariable> for Expression {
             ExpressionVariable::Command(command) => self.set_command(command),
             ExpressionVariable::TimeFrequency(frequency) => self.set_frequency(frequency),
             ExpressionVariable::DataName(data_name) => self.set_data_name(data_name),
-            ExpressionVariable::DisplayType(display_type) => self.set_display_type(display_type),
+            ExpressionVariable::RenderContext(display_type) => self.set_display_type(display_type),
             ExpressionVariable::Date(date) => self.set_date(date),
         }
     }
@@ -155,7 +148,7 @@ impl Display for ExpressionVariable {
             ExpressionVariable::Command(command) => command.fmt(f),
             ExpressionVariable::TimeFrequency(frequency) => frequency.fmt(f),
             ExpressionVariable::DataName(data_name) => data_name.fmt(f),
-            ExpressionVariable::DisplayType(display_type) => display_type.fmt(f),
+            ExpressionVariable::RenderContext(display_type) => display_type.fmt(f),
             ExpressionVariable::Date(date) => date.format("%Y-%m-%d").fmt(f),
         }
     }
@@ -173,7 +166,7 @@ pub struct Expression {
     pub command: Option<String>,
     pub frequency: Option<TimeFrequency>,
     pub data_name: Option<String>,
-    pub display_type: Option<DisplayType>,
+    pub display_type: Option<RenderContext>,
     pub date: Option<NaiveDate>,
 }
 
@@ -197,7 +190,7 @@ impl Expression {
         self.data_name = Some(data_name);
     }
     /// Set the expression's [DisplayType].
-    pub fn set_display_type(&mut self, display_type: DisplayType) {
+    pub fn set_display_type(&mut self, display_type: RenderContext) {
         self.display_type = Some(display_type);
     }
     /// Set the expression's command name
@@ -417,7 +410,7 @@ mod tests {
         let mut expr = Expression::new();
         let date = NaiveDate::from_ymd(2022, 2, 4);
         expr.set_date(date);
-        for var in ["Weekly", "change", "cat_purrs", "describedpercentage"] {
+        for var in ["Weekly", "change", "cat_purrs", "Words"] {
             expr += ExpressionVariable::try_new(var).unwrap()
         }
         let result = String::try_from(Command::try_from(&expr).unwrap()).unwrap();

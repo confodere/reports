@@ -392,8 +392,7 @@ mod tests {
 
     #[test]
     fn test_expression() {
-        let (leftover, _) =
-            expression_tree("{{ Weekly cat_purrs change describedpercentage }}").unwrap();
+        let (leftover, _) = expression_tree("{{ Weekly cat_purrs change  }}").unwrap();
         assert!(leftover.len() == 0);
 
         assert_eq!(
@@ -436,7 +435,7 @@ mod tests {
         );
         assert_eq!(
             rendered(
-                "junk {{# cat_purrs 2022-02-04}} more junk {{ Weekly change describedpercentage}} next junk {{/#}} final junk"
+                "junk {{# cat_purrs 2022-02-04 Words}} more junk {{ Weekly change }} next junk {{/#}} final junk"
             )
             .unwrap(),
             "junk  more junk up 25.0% next junk  final junk".to_string()

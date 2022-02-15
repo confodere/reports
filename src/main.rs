@@ -1,3 +1,4 @@
+use crate::functions::display::RenderContext;
 use crate::functions::Figure;
 use crate::time_span::TimeFrequency;
 use chrono::{Datelike, Month, NaiveDate};

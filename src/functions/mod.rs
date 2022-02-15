@@ -1,16 +1,18 @@
+pub mod display;
 pub mod table;
 
 use crate::pre_process::block::{CommandDisplay, CommandFreq};
 use crate::time_span::{TimeFrequency, TimeSpan, TimeSpanIter};
-use crate::{DisplayType, Metric, Point};
+use crate::{Metric, Point};
 use anyhow::{anyhow, Error, Result};
+use display::{DisplayType, RenderContext};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 
 pub trait Figure {
     fn fig(&self) -> f64;
-    fn display_type(&self) -> DisplayType;
+    fn display_type(&self) -> RenderContext;
 
     fn from_inside(
         points: HashMap<TimeSpan, Point>,
@@ -39,16 +41,8 @@ pub struct ShowFigure<F>(pub F);
 impl<T: Figure> Display for ShowFigure<&T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.display_type() {
-            DisplayType::Rounded => write!(f, "{:.1}", self.0.fig()),
-            DisplayType::DescribedRounded => {
-                let description = if self.0.fig() > 0.0 { "up" } else { "down" };
-                write!(f, "{} {:.1}", description, self.0.fig().abs())
-            }
-            DisplayType::Percentage => write!(f, "{:.1}%", (100.0 * self.0.fig())),
-            DisplayType::DescribedPercentage => {
-                let description = if self.0.fig() > 0.0 { "up" } else { "down" };
-                write!(f, "{} {:.1}%", description, (100.0 * self.0.fig().abs()))
-            }
+            RenderContext::Words => DisplayType::Described(self.0.fig(), 1).fmt(f),
+            RenderContext::Numbers => DisplayType::Rounded(self.0.fig(), 1).fmt(f),
         }
     }
 }
@@ -59,7 +53,7 @@ pub struct Change {
     new: f64,
     span: TimeSpan,
     frequency: TimeFrequency,
-    display_type: DisplayType,
+    display_type: RenderContext,
 }
 
 impl Figure for Change {
@@ -67,7 +61,7 @@ impl Figure for Change {
         (self.new - self.old) / self.old
     }
 
-    fn display_type(&self) -> DisplayType {
+    fn display_type(&self) -> RenderContext {
         self.display_type
     }
 }
@@ -91,7 +85,7 @@ impl TryFrom<CommandFreq> for Change {
             frequency: value.frequency,
             display_type: match value.display_type {
                 Some(v) => v,
-                None => DisplayType::Percentage,
+                None => RenderContext::Numbers,
             },
         })
     }
@@ -99,7 +93,10 @@ impl TryFrom<CommandFreq> for Change {
 
 impl Display for Change {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        ShowFigure(self).fmt(f)
+        match self.display_type() {
+            RenderContext::Numbers => DisplayType::Percentage(self.fig(), 1).fmt(f),
+            RenderContext::Words => DisplayType::DescribedPercentage(self.fig(), 1).fmt(f),
+        }
     }
 }
 
@@ -120,7 +117,7 @@ impl<'a> Change {
             new: vals[0],
             span: metric.data.span,
             frequency: metric.frequency,
-            display_type: DisplayType::Percentage,
+            display_type: RenderContext::Numbers,
         })
     }
 }
@@ -130,7 +127,7 @@ pub struct AvgFreq {
     fig: f64,
     span: TimeSpan,
     frequency: TimeFrequency,
-    display_type: DisplayType,
+    display_type: RenderContext,
 }
 
 impl Figure for AvgFreq {
@@ -138,7 +135,7 @@ impl Figure for AvgFreq {
         self.fig * (self.span.clone() / self.frequency.clone())
     }
 
-    fn display_type(&self) -> DisplayType {
+    fn display_type(&self) -> RenderContext {
         self.display_type
     }
 }
@@ -156,7 +153,7 @@ impl TryFrom<CommandFreq> for AvgFreq {
             frequency: value.frequency,
             display_type: match value.display_type {
                 Some(v) => v,
-                None => DisplayType::Rounded,
+                None => RenderContext::Numbers,
             },
         })
     }
@@ -165,8 +162,7 @@ impl TryFrom<CommandFreq> for AvgFreq {
 impl Display for AvgFreq {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.display_type() {
-            DisplayType::Rounded => write!(f, "{:.1}", self.fig()),
-            DisplayType::DescribedRounded => {
+            RenderContext::Words => {
                 let freq = match self.frequency {
                     TimeFrequency::Yearly => "year",
                     TimeFrequency::Quarterly => "quarter",
@@ -174,14 +170,14 @@ impl Display for AvgFreq {
                     TimeFrequency::Weekly => "week",
                     TimeFrequency::Daily => "day",
                 };
-                write!(f, "{:.1} per {}", self.fig(), freq)
+                write!(
+                    f,
+                    "{} per {}",
+                    DisplayType::Rounded(self.fig(), 1).to_string(),
+                    freq
+                )
             }
-            DisplayType::Percentage => {
-                panic!("AvgFreq cannot be represented as a percentage")
-            }
-            DisplayType::DescribedPercentage => {
-                panic!("AvgFreq cannot be represented as a described percentage")
-            }
+            RenderContext::Numbers => DisplayType::Rounded(self.fig(), 1).fmt(f),
         }
     }
 }
@@ -198,7 +194,7 @@ impl AvgFreq {
                 fig: point.fig(),
                 span: metric.data.span,
                 frequency: metric.frequency,
-                display_type: DisplayType::Rounded,
+                display_type: RenderContext::Numbers,
             })
         } else {
             Err(String::from("Failed to create AvgFreq"))
@@ -209,16 +205,16 @@ impl AvgFreq {
 #[derive(Serialize, Deserialize)]
 pub struct Fig {
     pub fig: f64,
-    display_type: DisplayType,
+    display_type: RenderContext,
 }
 
 impl Fig {
-    pub fn new(fig: f64, display_type: Option<DisplayType>) -> Self {
+    pub fn new(fig: f64, display_type: Option<RenderContext>) -> Self {
         Fig {
             fig,
             display_type: match display_type {
                 Some(display_type) => display_type,
-                None => DisplayType::Rounded,
+                None => RenderContext::Numbers,
             },
         }
     }
@@ -228,7 +224,7 @@ impl Figure for Fig {
     fn fig(&self) -> f64 {
         self.fig
     }
-    fn display_type(&self) -> DisplayType {
+    fn display_type(&self) -> RenderContext {
         self.display_type
     }
 }
