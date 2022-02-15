@@ -4,8 +4,7 @@ pub mod pre_process;
 pub mod time_span;
 
 use crate::functions::{AvgFreq, Change, Figure, ShowFigure};
-use crate::parser::FigureExpression;
-use crate::time_span::{TimeFrequency, TimeSpan};
+pub use crate::time_span::{TimeFrequency, TimeSpan};
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use rusqlite::{params, Connection};
@@ -361,7 +360,7 @@ impl Data {
         Ok(found)
     }
 
-    fn get_string(&self, name: String) -> Result<String> {
+    pub fn get_string(&self, name: String) -> Result<String> {
         Ok(match name.as_str() {
             "name" => self.name.clone(),
             "Name" => self.long_name.clone(),
@@ -454,7 +453,7 @@ impl FromStr for DisplayType {
             "rounded" => Ok(Self::Rounded),
             "describedrounded" => Ok(Self::DescribedRounded),
             "percentage" => Ok(Self::Percentage),
-            "describedpercetange" => Ok(Self::DescribedPercentage),
+            "describedpercentage" => Ok(Self::DescribedPercentage),
             _ => Err(anyhow!("{} is not a valid DisplayType", s)),
         }
     }
@@ -510,7 +509,7 @@ mod tests {
         if let Ok(change) = change {
             let data = change.to_string();
 
-            assert_eq!(data, "up 64.6%");
+            assert_eq!(data, "64.6%");
         } else {
             panic!("Couldn't create change")
         }

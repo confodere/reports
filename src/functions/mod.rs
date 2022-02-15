@@ -2,7 +2,7 @@ pub mod table;
 
 use crate::pre_process::block::{CommandDisplay, CommandFreq};
 use crate::time_span::{TimeFrequency, TimeSpan, TimeSpanIter};
-use crate::{Data, DisplayType, FigureExpression, Metric, Point};
+use crate::{DisplayType, Metric, Point};
 use anyhow::{anyhow, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -47,7 +47,7 @@ impl<T: Figure> Display for ShowFigure<&T> {
             DisplayType::Percentage => write!(f, "{:.1}%", (100.0 * self.0.fig())),
             DisplayType::DescribedPercentage => {
                 let description = if self.0.fig() > 0.0 { "up" } else { "down" };
-                write!(f, "{} {:.1}", description, (100.0 * self.0.fig().abs()))
+                write!(f, "{} {:.1}%", description, (100.0 * self.0.fig().abs()))
             }
         }
     }
@@ -104,19 +104,6 @@ impl Display for Change {
 }
 
 impl<'a> Change {
-    pub fn from_figure_expresssion(exp: &FigureExpression, data: &Data) -> Result<Self> {
-        let points = data.read_points((&data.span - exp.frequency).start(), data.span.end())?;
-        let vals = Change::from_inside(points, data.span, exp.frequency, 2)?;
-
-        Ok(Change {
-            old: vals[1],
-            new: vals[0],
-            span: data.span,
-            frequency: exp.frequency,
-            display_type: DisplayType::Percentage,
-        })
-    }
-
     pub fn from(metric: &Metric) -> Result<Change> {
         let datapoints = metric
             .data
@@ -200,16 +187,6 @@ impl Display for AvgFreq {
 }
 
 impl AvgFreq {
-    pub fn from_figure_expresssion(exp: &FigureExpression, data: &Data) -> Result<Self> {
-        let point = data.read_point()?;
-        Ok(AvgFreq {
-            fig: point.fig(),
-            span: data.span,
-            frequency: exp.frequency,
-            display_type: DisplayType::Rounded,
-        })
-    }
-
     pub fn from(metric: &Metric) -> Result<AvgFreq, String> {
         let datapoints = metric
             .data

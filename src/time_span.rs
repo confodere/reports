@@ -147,7 +147,7 @@ impl Iterator for TimeSpanIter {
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use reports::{TimeSpan, TimeFrequency};
+/// use reports::time_span::{TimeSpan, TimeFrequency};
 /// let date = NaiveDate::from_ymd(2022, 1, 21);
 /// let date_53 = NaiveDate::from_ymd(2020, 1, 21);
 ///
@@ -283,7 +283,7 @@ impl Default for TimeFrequency {
 ///
 /// ```
 /// use chrono::NaiveDate;
-/// use reports::{TimeFrequency, TimeSpan};
+/// use reports::time_span::{TimeFrequency, TimeSpan};
 /// let date = NaiveDate::from_ymd(2022, 1, 17);
 /// let day = TimeSpan::new(&date, TimeFrequency::Daily);
 /// let week = TimeSpan::new(&date, TimeFrequency::Weekly);

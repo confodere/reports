@@ -7,16 +7,16 @@ use anyhow::{Error, Result};
 /// A row or column adds the *same* [ExpressionVariable] to the entire row/column,
 /// so that a cross-section of two variables is generated.
 pub struct Table<'a> {
-    rows: Vec<ExpressionVariable<'a>>,
-    cols: Vec<ExpressionVariable<'a>>,
-    ctx: &'a Expression<'a>,
+    rows: Vec<ExpressionVariable>,
+    cols: Vec<ExpressionVariable>,
+    ctx: &'a Expression,
 }
 
 impl<'a> Table<'a> {
     pub fn new(
-        rows: Vec<ExpressionVariable<'a>>,
-        cols: Vec<ExpressionVariable<'a>>,
-        ctx: &'a Expression<'a>,
+        rows: Vec<ExpressionVariable>,
+        cols: Vec<ExpressionVariable>,
+        ctx: &'a Expression,
     ) -> Self {
         Self { rows, cols, ctx }
     }
@@ -72,8 +72,8 @@ mod tests {
             ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly),
         ];
         let rows = vec![
-            ExpressionVariable::Command("change"),
-            ExpressionVariable::Command("avg_freq"),
+            ExpressionVariable::Command("change".to_string()),
+            ExpressionVariable::Command("avg_freq".to_string()),
         ];
         let tbl = Table::new(rows, cols, &ctx);
         let tbl = String::try_from(tbl).unwrap();
