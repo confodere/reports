@@ -8,6 +8,7 @@ use std::rc::Rc;
 
 use crate::functions::table::Table;
 use crate::functions::{AvgFreq, Change, Fig};
+use crate::parser;
 use crate::{Data, DisplayType, TimeFrequency};
 
 use super::tree::Component;
@@ -99,12 +100,13 @@ impl TryFrom<Command> for String {
 pub enum ExpressionVariable {
     Command(String),
     TimeFrequency(TimeFrequency),
-    Data(Rc<Data>),
+    DataName(String),
+    Date(NaiveDate),
     DisplayType(DisplayType),
 }
 
 impl ExpressionVariable {
-    pub fn try_new(s: &str, date: &NaiveDate) -> Result<Self> {
+    pub fn try_new(s: &str) -> Result<Self> {
         if COMMANDS.contains(s) {
             Ok(ExpressionVariable::Command(s.to_string()))
         } else if FREQUENCIES.contains(s) {
@@ -114,12 +116,13 @@ impl ExpressionVariable {
         } else if DISPLAY_TYPES.contains(s) {
             Ok(ExpressionVariable::DisplayType(s.parse::<DisplayType>()?))
         } else if DATA_NAMES.contains(&s.to_string()) {
-            Ok(ExpressionVariable::Data(Rc::new(Data::read(
-                &s.to_string(),
-                date,
-            )?)))
+            Ok(ExpressionVariable::DataName(s.to_string()))
         } else {
-            return Err(anyhow!("Unknown key word: {}", s));
+            if let Ok(date) = parser::parse_date(s) {
+                Ok(ExpressionVariable::Date(date))
+            } else {
+                return Err(anyhow!("Unknown key word: {}", s));
+            }
         }
     }
 }
@@ -129,8 +132,9 @@ impl AddAssign<ExpressionVariable> for Expression {
         match rhs {
             ExpressionVariable::Command(command) => self.set_command(command),
             ExpressionVariable::TimeFrequency(frequency) => self.set_frequency(frequency),
-            ExpressionVariable::Data(data) => self.set_data(&data),
+            ExpressionVariable::DataName(data_name) => self.set_data_name(data_name),
             ExpressionVariable::DisplayType(display_type) => self.set_display_type(display_type),
+            ExpressionVariable::Date(date) => self.set_date(date),
         }
     }
 }
@@ -150,8 +154,9 @@ impl Display for ExpressionVariable {
         match self {
             ExpressionVariable::Command(command) => command.fmt(f),
             ExpressionVariable::TimeFrequency(frequency) => frequency.fmt(f),
-            ExpressionVariable::Data(data) => write!(f, "{}", data.long_name),
+            ExpressionVariable::DataName(data_name) => data_name.fmt(f),
             ExpressionVariable::DisplayType(display_type) => display_type.fmt(f),
+            ExpressionVariable::Date(date) => date.format("%Y-%m-%d").fmt(f),
         }
     }
 }
@@ -167,8 +172,9 @@ impl Display for ExpressionVariable {
 pub struct Expression {
     pub command: Option<String>,
     pub frequency: Option<TimeFrequency>,
-    pub data: Option<Rc<Data>>,
+    pub data_name: Option<String>,
     pub display_type: Option<DisplayType>,
+    pub date: Option<NaiveDate>,
 }
 
 impl Expression {
@@ -177,8 +183,9 @@ impl Expression {
         Expression {
             command: None,
             frequency: None,
-            data: None,
+            data_name: None,
             display_type: None,
+            date: None,
         }
     }
     /// Set the expression's [TimeFrequency].
@@ -186,8 +193,8 @@ impl Expression {
         self.frequency = Some(frequency);
     }
     /// Set the expression's [Data].
-    pub fn set_data(&mut self, data: &Rc<Data>) {
-        self.data = Some(Rc::clone(&data));
+    pub fn set_data_name(&mut self, data_name: String) {
+        self.data_name = Some(data_name);
     }
     /// Set the expression's [DisplayType].
     pub fn set_display_type(&mut self, display_type: DisplayType) {
@@ -196,6 +203,10 @@ impl Expression {
     /// Set the expression's command name
     pub fn set_command(&mut self, command: String) {
         self.command = Some(command);
+    }
+    /// Set the expression's date
+    pub fn set_date(&mut self, date: NaiveDate) {
+        self.date = Some(date);
     }
 }
 
@@ -211,9 +222,14 @@ impl Component for Expression {
                 self.set_frequency(v)
             }
         }
-        if let None = self.data {
-            if let Some(v) = &ctx.data {
-                self.set_data(&v)
+        if let None = self.data_name {
+            if let Some(v) = &ctx.data_name {
+                self.set_data_name(v.clone())
+            }
+        }
+        if let None = self.date {
+            if let Some(v) = ctx.date {
+                self.set_date(v)
             }
         }
         if let None = self.display_type {
@@ -263,13 +279,22 @@ impl TryFrom<&Expression> for CommandFreq {
 
     fn try_from(value: &Expression) -> Result<Self, Self::Error> {
         match value.frequency {
-            Some(frequency) => match &value.data {
-                Some(data) => Ok(CommandFreq {
-                    data: Rc::clone(data),
-                    frequency,
-                    display_type: value.display_type,
-                }),
-                None => Err(anyhow!("Data required but not provided for {:#?}", value)),
+            Some(frequency) => match &value.data_name {
+                Some(data_name) => match &value.date {
+                    Some(date) => Ok(CommandFreq {
+                        data: Rc::new(Data::read(data_name, date)?),
+                        frequency,
+                        display_type: value.display_type,
+                    }),
+                    None => Err(anyhow!(
+                        "Date required for data but not provided for {:#?}",
+                        value
+                    )),
+                },
+                None => Err(anyhow!(
+                    "Data name required but not provided for {:#?}",
+                    value
+                )),
             },
             None => Err(anyhow!(
                 "TimeFrequency required but not provided for {:#?}",
@@ -283,11 +308,17 @@ impl TryFrom<&Expression> for CommandDisplay {
     type Error = Error;
 
     fn try_from(value: &Expression) -> Result<Self, Self::Error> {
-        match &value.data {
-            Some(data) => Ok(CommandDisplay {
-                data: Rc::clone(data),
-                display_type: value.display_type,
-            }),
+        match &value.data_name {
+            Some(data_name) => match &value.date {
+                Some(date) => Ok(CommandDisplay {
+                    data: Rc::new(Data::read(data_name, date)?),
+                    display_type: value.display_type,
+                }),
+                None => Err(anyhow!(
+                    "Date required for data but not provided for {:#?}",
+                    value
+                )),
+            },
             None => Err(anyhow!("Data required but not provided for {:#?}", value)),
         }
     }
@@ -297,14 +328,20 @@ impl TryFrom<&Expression> for Rc<Data> {
     type Error = Error;
 
     fn try_from(value: &Expression) -> Result<Self, Self::Error> {
-        match &value.data {
-            Some(data) => Ok(Rc::clone(&data)),
+        match &value.data_name {
+            Some(data_name) => match &value.date {
+                Some(date) => Ok(Rc::new(Data::read(data_name, date)?)),
+                None => Err(anyhow!(
+                    "Date required for data but not provided for {:#?}",
+                    value
+                )),
+            },
             None => Err(anyhow!("Data required but not provided for {:#?}", value)),
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExpressionNamedCollection {
     command: String,
     collections: HashMap<String, Vec<ExpressionVariable>>,
@@ -366,9 +403,8 @@ mod tests {
         let mut expr = Expression::new();
 
         expr.set_frequency(TimeFrequency::Weekly);
-        expr.set_data(&Rc::new(
-            Data::read(&"cat_purrs".to_string(), &NaiveDate::from_ymd(2022, 2, 4)).unwrap(),
-        ));
+        expr.set_data_name("cat_purrs".to_string());
+        expr.set_date(NaiveDate::from_ymd(2022, 2, 4));
         expr.set_command("change".to_string());
 
         let result = String::try_from(Command::try_from(&expr).unwrap()).unwrap();
@@ -380,8 +416,9 @@ mod tests {
     fn test_expression_variable() {
         let mut expr = Expression::new();
         let date = NaiveDate::from_ymd(2022, 2, 4);
+        expr.set_date(date);
         for var in ["Weekly", "change", "cat_purrs", "describedpercentage"] {
-            expr += ExpressionVariable::try_new(var, &date).unwrap()
+            expr += ExpressionVariable::try_new(var).unwrap()
         }
         let result = String::try_from(Command::try_from(&expr).unwrap()).unwrap();
 

@@ -1,5 +1,5 @@
-use crate::parser::Statements;
-use crate::pre_process::block::Expression;
+use crate::parser::Segments;
+use crate::pre_process::block::{Expression, ExpressionVariable};
 use crate::pre_process::tree::{Component, Node};
 use anyhow::Result;
 use chrono::{Local, NaiveDate};
@@ -41,7 +41,7 @@ impl Preprocessor for Processor {
 
         book.for_each_mut(|section| {
             if let BookItem::Chapter(ref mut ch) = *section {
-                if let Err(e) = pre_process_blocks(ch, &date) {
+                if let Err(e) = pre_process_blocks(ch, date.clone()) {
                     eprintln!("report_process block error: {:#?}", e);
                 }
 
@@ -57,8 +57,9 @@ impl Preprocessor for Processor {
     }
 }
 
-fn pre_process_blocks(chapter: &mut Chapter, _: &NaiveDate) -> Result<()> {
-    let mut node = Node::from(Statements::try_from(chapter.content.clone())?.0);
+fn pre_process_blocks(chapter: &mut Chapter, date: NaiveDate) -> Result<()> {
+    let mut node = Node::from(Segments::try_from(chapter.content.clone())?.0);
+    node.value += ExpressionVariable::Date(date);
     chapter.content = node.render(&Expression::new())?;
 
     Ok(())
@@ -166,7 +167,7 @@ mod tests {
 ",
         );
 
-        assert_eq!(pre_process_blocks(&mut ch, &date).unwrap(), ());
+        assert_eq!(pre_process_blocks(&mut ch, date).unwrap(), ());
         assert_eq!(ch.content, expected_table);
     }
 
@@ -185,7 +186,7 @@ mod tests {
 
         let date = NaiveDate::from_ymd(2022, 2, 4);
 
-        assert_eq!(pre_process_blocks(&mut ch, &date).unwrap(), ());
+        assert_eq!(pre_process_blocks(&mut ch, date).unwrap(), ());
         assert_eq!(
             ch.content,
             "
@@ -216,7 +217,7 @@ mod tests {
         );
         let date = NaiveDate::from_ymd(2022, 2, 4);
 
-        assert_eq!(pre_process_blocks(&mut ch, &date).unwrap(), ());
+        assert_eq!(pre_process_blocks(&mut ch, date).unwrap(), ());
         assert_eq!(
             ch.content,
             "
@@ -250,7 +251,7 @@ mod tests {
         );
         let date = NaiveDate::from_ymd(2022, 2, 4);
 
-        assert_eq!(pre_process_blocks(&mut ch, &date).unwrap(), ());
+        assert_eq!(pre_process_blocks(&mut ch, date).unwrap(), ());
         assert_eq!(
             ch.content,
             "
@@ -269,7 +270,8 @@ mod tests {
             "{{# change }}{{*table cols=[Daily] rows=[cat_purrs dog_woofs fish_zooms]}}{{/#}}"
                 .to_string();
 
-        let mut node = Node::from(Statements::try_from(text).unwrap().0);
+        let mut node = Node::from(Segments::try_from(text).unwrap().0);
+        node.value.set_date(NaiveDate::from_ymd(2022, 2, 4));
         let text = node.render(&Expression::new()).unwrap();
 
         assert_eq!(
@@ -277,9 +279,9 @@ mod tests {
             "
 | _ | Daily |
 | --- | --- |
-| Cat Purrs | 25.0% |
-| Dog Woofs | -60.9% |
-| Fish Zooms | -14.3% |
+| cat_purrs | 25.0% |
+| dog_woofs | -60.9% |
+| fish_zooms | -14.3% |
 "
             .to_string()
         );
@@ -295,15 +297,15 @@ mod tests {
         );
         let date = NaiveDate::from_ymd(2022, 2, 4);
 
-        assert_eq!(pre_process_blocks(&mut ch, &date).unwrap(), ());
+        assert_eq!(pre_process_blocks(&mut ch, date).unwrap(), ());
         assert_eq!(
             ch.content,
             "
 | _ | fig | description |
 | --- | --- | --- |
-| Cat Purrs | 10.0 | A measure of the number of times my cat purred |
-| Dog Woofs | 25.0 | A measure of the number of times my dog woofed |
-| Fish Zooms | 3.0 | A measure of the number of times my fish zoomed |
+| cat_purrs | 10.0 | A measure of the number of times my cat purred |
+| dog_woofs | 25.0 | A measure of the number of times my dog woofed |
+| fish_zooms | 3.0 | A measure of the number of times my fish zoomed |
 "
         );
     }

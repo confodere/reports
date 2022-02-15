@@ -57,16 +57,14 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::*;
-    use crate::{Data, TimeFrequency};
-    use std::rc::Rc;
+    use crate::TimeFrequency;
 
     #[test]
     fn test_table() {
         let date = NaiveDate::from_ymd(2022, 2, 4);
         let mut ctx = Expression::new();
-        ctx.set_data(&Rc::new(
-            Data::read(&"cat_purrs".to_string(), &date).unwrap(),
-        ));
+        ctx.set_data_name("cat_purrs".to_string());
+        ctx.set_date(date);
         let cols = vec![
             ExpressionVariable::TimeFrequency(TimeFrequency::Weekly),
             ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly),

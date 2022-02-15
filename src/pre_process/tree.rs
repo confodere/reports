@@ -6,9 +6,10 @@ pub trait Component {
     fn render(&mut self, ctx: &Expression) -> Result<String>;
 }
 
-pub struct Filler(pub String);
+#[derive(Debug, PartialEq, Eq)]
+pub struct Text(pub String);
 
-impl Component for Filler {
+impl Component for Text {
     fn render(&mut self, _: &Expression) -> Result<String> {
         Ok(self.0.clone())
     }
@@ -44,9 +45,14 @@ impl Component for Node {
                 self.value.set_frequency(v)
             }
         }
-        if let None = self.value.data {
-            if let Some(v) = &ctx.data {
-                self.value.set_data(&v)
+        if let None = self.value.data_name {
+            if let Some(v) = &ctx.data_name {
+                self.value.set_data_name(v.clone())
+            }
+        }
+        if let None = self.value.date {
+            if let Some(v) = ctx.date {
+                self.value.set_date(v)
             }
         }
         if let None = self.value.display_type {
@@ -77,13 +83,15 @@ mod tests {
         let date = NaiveDate::from_ymd(2022, 2, 4);
         let mut vars = Vec::new();
         for var in ["Weekly", "cat_purrs", "change"] {
-            vars.push(ExpressionVariable::try_new(var, &date).unwrap());
+            vars.push(ExpressionVariable::try_new(var).unwrap());
         }
         let vars_2 = vec![ExpressionVariable::Command("avg_freq".to_string())];
         let vars_3 = vec![ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly)];
 
-        let leaf_1 = Box::new(Expression::from(vars_3));
-        let leaf_2 = Box::new(Expression::from(vars_2));
+        let mut leaf_1 = Box::new(Expression::from(vars_3));
+        let mut leaf_2 = Box::new(Expression::from(vars_2));
+        leaf_1.set_date(date.clone());
+        leaf_2.set_date(date);
 
         let mut branch = Node::new(Expression::from(vars));
 

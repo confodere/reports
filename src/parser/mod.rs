@@ -1,7 +1,9 @@
 use crate::pre_process::block::{Expression, ExpressionNamedCollection, ExpressionVariable};
-use crate::pre_process::tree::{Filler, Node};
-use anyhow::Result;
+use crate::pre_process::tree::{Node, Text};
+use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
+use nom::bytes::complete::take_until1;
+use nom::character::complete::digit1;
 use nom::combinator::map_res;
 use nom::{
     branch::alt,
@@ -11,7 +13,7 @@ use nom::{
     error::{ErrorKind, ParseError},
     multi::{many0, separated_list1},
     sequence::{delimited, pair, separated_pair, terminated, tuple},
-    AsChar, IResult, InputTakeAtPosition, Parser,
+    AsChar, IResult, InputTakeAtPosition,
 };
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -132,7 +134,7 @@ pub fn named_expression(input: &str) -> IResult<&str, (&str, Vec<(&str, Vec<&str
 }
 
 /// Matches a block with the form {{# arg arg }}anything{{/#}}
-pub fn block_args(input: &str) -> IResult<&str, (Vec<&str>, Vec<Statement>, &str)> {
+pub fn block_args(input: &str) -> IResult<&str, (Vec<&str>, Vec<Segment>, &str)> {
     terminated(
         tuple((
             // Passing on the consumed length is so that children of a block can adjust their positioning by the size of the opening clause
@@ -170,42 +172,36 @@ pub fn expression(input: &str) -> IResult<&str, Vec<LocatedStatement>> {
         }),
     )(input)
 }*/
-pub fn expression(input: &str) -> IResult<&str, Vec<Statement>> {
-    let (res, r) = many0(
-        pair(
-            take_until("{{").map(|filler: &str| Statement::Filler(Filler(filler.to_string()))),
-            alt((
-                expression_tree,
-                named_expression_tree,
-                block_expression_tree,
-            )),
-        )
-        .map(|(filler, mut expr)| {
-            expr.insert(0, filler);
-            expr
-        }),
-    )(input)
-    .map(|(leftover, exprs)| {
-        (
-            leftover,
-            exprs.into_iter().flatten().collect::<Vec<Statement>>(),
-        )
-    })?;
 
-    Ok((res, r))
+fn skip_text(input: &str) -> IResult<&str, Segment> {
+    let (rest, text) = take_until1("{{")(input)?;
+    Ok((rest, Segment::Text(Text(text.to_string()))))
 }
 
-pub fn expression_tree(input: &str) -> IResult<&str, Vec<Statement>> {
+fn find_segments(input: &str) -> IResult<&str, Segment> {
+    alt((
+        block_expression_tree,
+        named_expression_tree,
+        expression_tree,
+        skip_text,
+    ))(input)
+}
+
+pub fn expression(input: &str) -> IResult<&str, Vec<Segment>> {
+    many0(find_segments)(input)
+}
+
+pub fn expression_tree(input: &str) -> IResult<&str, Segment> {
     map_res::<_, _, _, _, anyhow::Error, _, _>(curly_args, |exp| {
         let vars = exp
             .into_iter()
-            .map(|var| ExpressionVariable::try_new(var, &NaiveDate::from_ymd(2022, 2, 4)))
+            .map(|var| ExpressionVariable::try_new(var))
             .collect::<Result<Vec<ExpressionVariable>>>()?;
-        Ok(vec![Statement::Expression(Expression::from(vars))])
+        Ok(Segment::Expression(Expression::from(vars)))
     })(input)
 }
 
-pub fn named_expression_tree(input: &str) -> IResult<&str, Vec<Statement>> {
+pub fn named_expression_tree(input: &str) -> IResult<&str, Segment> {
     map_res::<_, _, _, _, anyhow::Error, _, _>(named_expression, |(var, exp)| {
         let m = exp
             .into_iter()
@@ -213,96 +209,147 @@ pub fn named_expression_tree(input: &str) -> IResult<&str, Vec<Statement>> {
                 Ok((
                     key.to_string(),
                     val.into_iter()
-                        .map(|v| {
-                            Ok(ExpressionVariable::try_new(
-                                v,
-                                &NaiveDate::from_ymd(2022, 2, 4),
-                            )?)
-                        })
+                        .map(|v| Ok(ExpressionVariable::try_new(v)?))
                         .collect::<Result<Vec<_>>>()?,
                 ))
             })
             .collect::<Result<HashMap<_, _>>>()?;
-        Ok(vec![Statement::ExpressionNamedCollection(
+        Ok(Segment::ExpressionNamedCollection(
             ExpressionNamedCollection::new(var.to_string(), m, Expression::new()),
-        )])
+        ))
     })(input)
 }
 
-pub fn block_expression_tree(input: &str) -> IResult<&str, Vec<Statement>> {
-    map_res::<_, _, _, _, anyhow::Error, _, _>(block_args, |(args, nodes, filler)| {
-        let mut node = Node::new(Expression::from(
-            args.into_iter()
-                .map(|var| ExpressionVariable::try_new(var, &NaiveDate::from_ymd(2022, 2, 4)))
-                .collect::<Result<Vec<_>>>()?,
-        ));
-        for component in nodes {
-            match component {
-                Statement::Expression(e) => node.add_child(Box::new(e)),
-                Statement::ExpressionNamedCollection(e) => node.add_child(Box::new(e)),
-                Statement::Node(e) => node.add_child(Box::new(e)),
-                Statement::Filler(e) => node.add_child(Box::new(e)),
-            };
-        }
-        Ok(vec![
-            Statement::Node(node),
-            Statement::Filler(Filler(filler.to_string())),
-        ])
+pub fn block_expression_tree(input: &str) -> IResult<&str, Segment> {
+    map_res::<_, _, _, _, anyhow::Error, _, _>(block_args, |(args, mut nodes, filler)| {
+        nodes.push(Segment::Text(Text(filler.to_string())));
+        let node = SegmentNode::new(
+            Expression::from(
+                args.into_iter()
+                    .map(|var| ExpressionVariable::try_new(var))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+            nodes,
+        );
+        Ok(Segment::Node(node))
     })(input)
 }
 
+#[derive(Debug, PartialEq, Eq)]
 /// A parsed section of text.
-pub enum Statement {
+pub enum Segment {
     Expression(Expression),
     ExpressionNamedCollection(ExpressionNamedCollection),
-    Node(Node),
-    Filler(Filler),
+    Node(SegmentNode),
+    Text(Text),
 }
 
-pub struct Statements(pub Vec<Statement>);
+#[derive(Debug, PartialEq, Eq)]
+pub struct SegmentNode {
+    pub value: Expression,
+    pub children: Vec<Segment>,
+}
 
-impl Deref for Statements {
-    type Target = Vec<Statement>;
+impl SegmentNode {
+    fn new(value: Expression, children: Vec<Segment>) -> Self {
+        SegmentNode { value, children }
+    }
+}
+
+pub struct Segments(pub Vec<Segment>);
+
+impl Deref for Segments {
+    type Target = Vec<Segment>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl TryFrom<String> for Statements {
+impl TryFrom<String> for Segments {
     type Error = anyhow::Error;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         match expression(&value) {
             Ok((filler, mut stmts)) => {
-                stmts.push(Statement::Filler(Filler(filler.to_string())));
-                Ok(Statements(stmts))
+                stmts.push(Segment::Text(Text(filler.to_string())));
+                Ok(Segments(stmts))
             }
             Err(e) => Err(e.map(|e| Error::new(e.input.to_string(), e.code)).into()),
         }
     }
 }
 
-impl From<Vec<Statement>> for Node {
-    fn from(stmts: Vec<Statement>) -> Self {
+impl From<Vec<Segment>> for Node {
+    fn from(stmts: Vec<Segment>) -> Self {
         let mut node = Node::new(Expression::new());
         for stmt in stmts {
             match stmt {
-                Statement::Expression(e) => node.add_child(Box::new(e)),
-                Statement::ExpressionNamedCollection(e) => node.add_child(Box::new(e)),
-                Statement::Node(e) => node.add_child(Box::new(e)),
-                Statement::Filler(e) => node.add_child(Box::new(e)),
+                Segment::Expression(e) => node.add_child(Box::new(e)),
+                Segment::ExpressionNamedCollection(e) => node.add_child(Box::new(e)),
+                Segment::Node(e) => {
+                    let mut sub_node = Node::from(e.children);
+                    sub_node.value = e.value;
+                    node.add_child(Box::new(sub_node));
+                }
+                Segment::Text(e) => node.add_child(Box::new(e)),
             }
         }
         node
     }
 }
 
+fn dmy_slash(input: &str) -> IResult<&str, (&str, &str, &str, &str, &str)> {
+    tuple((digit1, tag("/"), digit1, tag("/"), digit1))(input)
+}
+
+fn ymd_dash(input: &str) -> IResult<&str, (&str, &str, &str, &str, &str)> {
+    tuple((digit1, tag("-"), digit1, tag("-"), digit1))(input)
+}
+
+/// Matches and parses a date in a `&str` to a [NaiveDate] from forms:
+/// - %d/%m/%Y
+/// - %Y-%m-%d
+///
+/// # Example
+/// ```
+/// use reports::parser::parse_date;
+/// use chrono::NaiveDate;
+/// assert_eq!(parse_date("4/2/2022").unwrap(), NaiveDate::from_ymd(2022, 2, 4));
+/// assert_eq!(parse_date("2022-2-4").unwrap(), NaiveDate::from_ymd(2022, 2, 4));
+/// ```
+pub fn parse_date(input: &str) -> Result<NaiveDate> {
+    let date = if let Ok(_) = dmy_slash(input) {
+        NaiveDate::parse_from_str(input, "%d/%m/%Y")?
+    } else {
+        if let Ok(_) = ymd_dash(input) {
+            NaiveDate::parse_from_str(input, "%Y-%m-%d")?
+        } else {
+            return Err(anyhow!("{} is not a Y-m-d or d/m/Y date", input));
+        }
+    };
+    Ok(date)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::pre_process::tree::Component;
+    use nom::Err;
 
     use super::*;
+
+    #[test]
+    fn test_skip_text() {
+        assert_eq!(
+            skip_text("blah blah blah {{foo"),
+            Ok(("{{foo", Segment::Text(Text("blah blah blah ".to_string()))))
+        );
+        assert_eq!(
+            skip_text("blah"),
+            Err(Err::Error(Error::new("blah", ErrorKind::TakeUntil)))
+        );
+    }
+
     #[test]
     fn test_named_expression() {
         assert_eq!(
@@ -319,13 +366,14 @@ mod tests {
 
         let (_, mut s) =
             named_expression_tree("{{* table rows=[Weekly Quarterly] cols=[cat_purrs]}}").unwrap();
-        if let Statement::ExpressionNamedCollection(s) = &mut s[0] {
+        if let Segment::ExpressionNamedCollection(s) = &mut s {
             let mut expr = Expression::new();
             expr.set_command("change".to_string());
+            expr.set_date(NaiveDate::from_ymd(2022, 2, 4));
             assert_eq!(
                 s.render(&expr).unwrap(),
                 "
-| _ | Cat Purrs |
+| _ | cat_purrs |
 | --- | --- |
 | Weekly | 25.0% |
 | Quarterly | 233.3% |
@@ -335,6 +383,11 @@ mod tests {
         } else {
             panic!("Not correct statement")
         }
+
+        assert_eq!(
+            named_expression_tree("blah"),
+            Err(Err::Error(Error::new("blah", ErrorKind::Tag)))
+        );
     }
 
     #[test]
@@ -342,34 +395,55 @@ mod tests {
         let (leftover, _) =
             expression_tree("{{ Weekly cat_purrs change describedpercentage }}").unwrap();
         assert!(leftover.len() == 0);
+
+        assert_eq!(
+            expression_tree("blah"),
+            Err(Err::Error(Error::new("blah", ErrorKind::Tag)))
+        );
+    }
+
+    #[test]
+    fn test_block_expression() {
+        assert_eq!(
+            block_expression_tree("blah"),
+            Err(Err::Error(Error::new("blah", ErrorKind::Tag)))
+        );
+    }
+
+    #[test]
+    fn test_find_segments() {
+        assert_eq!(
+            find_segments(""),
+            Err(Err::Error(Error::new("", ErrorKind::TakeUntil)))
+        );
     }
 
     fn rendered(s: &str) -> Result<String> {
-        let mut node = Node::from(Statements::try_from(s.to_string())?.0);
+        let mut node = Node::from(Segments::try_from(s.to_string())?.0);
         node.render(&Expression::new())
     }
 
     #[test]
     fn test_statements() {
         assert_eq!(
-            rendered("{{ Weekly cat_purrs change}}").unwrap(),
+            rendered("{{ Weekly cat_purrs change 2022-02-04}}").unwrap(),
             "25.0%".to_string()
         );
 
         assert_eq!(
-            rendered("{{# cat_purrs }}{{ Weekly change}}{{/#}}").unwrap(),
+            rendered("{{# cat_purrs 2022-02-04}}{{ Weekly change}}{{/#}}").unwrap(),
             "25.0%".to_string()
         );
         assert_eq!(
             rendered(
-                "junk {{# cat_purrs }} more junk {{ Weekly change describedpercentage}} next junk {{/#}} final junk"
+                "junk {{# cat_purrs 2022-02-04}} more junk {{ Weekly change describedpercentage}} next junk {{/#}} final junk"
             )
             .unwrap(),
             "junk  more junk up 25.0% next junk  final junk".to_string()
         );
         assert_eq!(
             rendered(
-                "{{# cat_purrs }}{{*table rows=[Weekly Quarterly] cols=[change avg_freq]}}{{/#}}"
+                "{{# cat_purrs 2022-02-04 }}{{*table rows=[Weekly Quarterly] cols=[change avg_freq]}}{{/#}}"
             )
             .unwrap(),
             "
