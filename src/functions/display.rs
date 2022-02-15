@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Error};
+use num_format::{SystemLocale, ToFormattedString};
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Display};
 use std::str::FromStr;
@@ -26,34 +27,103 @@ impl FromStr for RenderContext {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum DisplayType {
-    Rounded(f64, usize),
-    Percentage(f64, usize),
-    Described(f64, usize),
-    DescribedPercentage(f64, usize),
+/// Formatter for floats to be used for rendering support by other function modules
+///
+pub struct FloatFormatter {
+    percentage: bool,
+    description: Option<Box<dyn Fn((f64, String)) -> String>>,
+    precision: Option<usize>,
+    num: f64,
 }
 
-impl Display for DisplayType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DisplayType::Rounded(num, precision) => write!(f, "{num:.precision$}"),
-            DisplayType::Percentage(num, precision) => {
-                write!(f, "{:.precision$}%", (100.0 * num))
-            }
-            DisplayType::Described(num, precision) => {
-                let description = if *num > 0.0 { "up" } else { "down" };
-                write!(f, "{description} {:.precision$}", num.abs())
-            }
-            DisplayType::DescribedPercentage(num, precision) => {
-                let description = if *num > 0.0 { "up" } else { "down" };
-                write!(f, "{description} {:.precision$}%", (100.0 * num.abs()))
-            }
+impl FloatFormatter {
+    pub fn new(num: f64) -> FloatFormatter {
+        FloatFormatter {
+            num,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_percentage(num: f64) -> FloatFormatter {
+        FloatFormatter {
+            num,
+            percentage: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_precision(num: f64, precision: usize) -> FloatFormatter {
+        FloatFormatter {
+            precision: Some(precision),
+            num,
+            ..Default::default()
+        }
+    }
+
+    pub fn new_all(
+        percentage: bool,
+        description: Option<Box<dyn Fn((f64, String)) -> String>>,
+        precision: Option<usize>,
+        num: f64,
+    ) -> FloatFormatter {
+        FloatFormatter {
+            percentage,
+            description,
+            precision,
+            num,
         }
     }
 }
 
-pub fn rounded(num: f64, precision: usize) -> f64 {
+impl Default for FloatFormatter {
+    /// `percentage`: false `description`: none `precision`: Some(0) `num`: 0
+    fn default() -> Self {
+        FloatFormatter {
+            percentage: false,
+            description: None,
+            precision: Some(0),
+            num: 0.0,
+        }
+    }
+}
+
+impl Display for FloatFormatter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let rendered = if self.percentage {
+            if let Some(precision) = self.precision {
+                if precision == 0 {
+                    let locale = SystemLocale::default().unwrap();
+                    format!(
+                        "{}%",
+                        ((100.0 * self.num).round() as i32).to_formatted_string(&locale)
+                    )
+                } else {
+                    format!("{:.*}%", precision, (100.0 * self.num))
+                }
+            } else {
+                format!("{}%", (100.0 * self.num))
+            }
+        } else {
+            if let Some(precision) = self.precision {
+                if precision == 0 {
+                    let locale = SystemLocale::default().unwrap();
+                    (self.num.round() as i32).to_formatted_string(&locale)
+                } else {
+                    format!("{:.*}", precision, self.num)
+                }
+            } else {
+                format!("{}", self.num)
+            }
+        };
+        if let Some(description) = &self.description {
+            write!(f, "{}", description((self.num, rendered)))
+        } else {
+            write!(f, "{}", &rendered)
+        }
+    }
+}
+
+fn _rounded(num: f64, precision: usize) -> f64 {
     if precision == 0 {
         num.round()
     } else {
@@ -63,21 +133,36 @@ pub fn rounded(num: f64, precision: usize) -> f64 {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
-    fn test_display_type() {
-        assert_eq!(
-            DisplayType::Rounded(1.234, 1).to_string(),
-            "1.2".to_string()
-        );
-        assert_eq!(DisplayType::Rounded(1.234, 0).to_string(), "1".to_string());
+    fn test_rounded() {
+        assert_eq!(_rounded(1.234, 2), 1.23);
+        assert_eq!(_rounded(1.234, 1), 1.2);
+        assert_eq!(_rounded(1.234, 0), 1.0);
     }
 
     #[test]
-    fn test_rounded() {
-        assert_eq!(rounded(1.234, 2), 1.23);
-        assert_eq!(rounded(1.234, 1), 1.2);
-        assert_eq!(rounded(1.234, 0), 1.0);
+    fn test_float_formatter() {
+        let formatter = FloatFormatter::new_all(
+            true,
+            Some(Box::new(|(num, num_print)| {
+                let description = if num > 0.0 { "up" } else { "down" };
+                format!("{description} {num_print}")
+            })),
+            Some(1),
+            1.2345,
+        );
+        assert_eq!(formatter.to_string(), "up 123.4%".to_string());
+    }
+
+    #[test]
+    fn test_formatter_comma() {
+        let formatter = FloatFormatter::new_percentage(123.45);
+        assert_eq!(formatter.to_string(), "12,345%");
+
+        let formatter = FloatFormatter::new(12345.12);
+        assert_eq!(formatter.to_string(), "12,345");
     }
 }

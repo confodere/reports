@@ -5,10 +5,12 @@ use crate::pre_process::block::{CommandDisplay, CommandFreq};
 use crate::time_span::{TimeFrequency, TimeSpan, TimeSpanIter};
 use crate::{Metric, Point};
 use anyhow::{anyhow, Error, Result};
-use display::{DisplayType, RenderContext};
+use display::RenderContext;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{self, Display};
+
+use self::display::FloatFormatter;
 
 pub trait Figure {
     fn fig(&self) -> f64;
@@ -41,8 +43,8 @@ pub struct ShowFigure<F>(pub F);
 impl<T: Figure> Display for ShowFigure<&T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0.display_type() {
-            RenderContext::Words => DisplayType::Described(self.0.fig(), 1).fmt(f),
-            RenderContext::Numbers => DisplayType::Rounded(self.0.fig(), 1).fmt(f),
+            RenderContext::Words => FloatFormatter::new(self.0.fig()).fmt(f),
+            RenderContext::Numbers => FloatFormatter::new(self.0.fig()).fmt(f),
         }
     }
 }
@@ -93,10 +95,24 @@ impl TryFrom<CommandFreq> for Change {
 
 impl Display for Change {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.display_type() {
-            RenderContext::Numbers => DisplayType::Percentage(self.fig(), 1).fmt(f),
-            RenderContext::Words => DisplayType::DescribedPercentage(self.fig(), 1).fmt(f),
-        }
+        let formatter = match self.display_type() {
+            RenderContext::Numbers => FloatFormatter::new_all(true, None, Some(1), self.fig()),
+            RenderContext::Words => FloatFormatter::new_all(
+                true,
+                Some(Box::new(|(num, num_print)| {
+                    let description = if num > 0.0 { "up" } else { "down" };
+                    let num_print = if let Some(val) = num_print.strip_prefix("-") {
+                        val
+                    } else {
+                        num_print.as_str()
+                    };
+                    format!("{description} {num_print}")
+                })),
+                Some(1),
+                self.fig(),
+            ),
+        };
+        formatter.fmt(f)
     }
 }
 
@@ -173,11 +189,11 @@ impl Display for AvgFreq {
                 write!(
                     f,
                     "{} per {}",
-                    DisplayType::Rounded(self.fig(), 1).to_string(),
+                    FloatFormatter::new_precision(self.fig(), 1).to_string(),
                     freq
                 )
             }
-            RenderContext::Numbers => DisplayType::Rounded(self.fig(), 1).fmt(f),
+            RenderContext::Numbers => FloatFormatter::new_precision(self.fig(), 1).fmt(f),
         }
     }
 }

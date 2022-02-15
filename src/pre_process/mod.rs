@@ -303,9 +303,9 @@ mod tests {
             "
 | _ | fig | description |
 | --- | --- | --- |
-| cat_purrs | 10.0 | A measure of the number of times my cat purred |
-| dog_woofs | 25.0 | A measure of the number of times my dog woofed |
-| fish_zooms | 3.0 | A measure of the number of times my fish zoomed |
+| cat_purrs | 10 | A measure of the number of times my cat purred |
+| dog_woofs | 25 | A measure of the number of times my dog woofed |
+| fish_zooms | 3 | A measure of the number of times my fish zoomed |
 "
         );
     }
