@@ -2,16 +2,18 @@ use crate::pre_process::block::{Expression, ExpressionNamedCollection, Expressio
 use crate::pre_process::tree::{Node, Text};
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
-use nom::bytes::complete::take_until1;
+use nom::bytes::complete::{is_not, take_until1};
 use nom::character::complete::digit1;
 use nom::combinator::map_res;
+use nom::Err;
+use nom::Parser;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until},
     character::complete::{alphanumeric1, multispace0, multispace1},
     error::Error,
     error::{ErrorKind, ParseError},
-    multi::{many0, separated_list1},
+    multi::{many0, many1, separated_list1},
     sequence::{delimited, pair, separated_pair, terminated, tuple},
     AsChar, IResult, InputTakeAtPosition,
 };
@@ -35,6 +37,27 @@ pub fn arg_list(input: &str) -> IResult<&str, Vec<&str>> {
     separated_list1(tag(" "), not_ending)(input)
 }
 
+/// A combinator that wraps an `inner` parser with a leading `start` tag and an ending `end`,
+/// returning the output of `inner`.
+fn sep_space_list<'a, T, F: 'a, O, O2, E: ParseError<&'a str>>(
+    separator: T,
+    inner: F,
+) -> impl FnMut(&'a str) -> IResult<&'a str, Vec<O>, E>
+where
+    T: Parser<&'a str, O2, E>,
+    F: Fn(&'a str) -> IResult<&'a str, O, E>,
+{
+    separated_list1(tuple((multispace0, separator, multispace0)), inner)
+}
+
+pub fn comma_list(input: &str) -> IResult<&str, Vec<Arg>> {
+    sep_space_list(tag(","), not_banned_process)(input)
+}
+
+pub fn space_list(input: &str) -> IResult<&str, Vec<Arg>> {
+    separated_list1(tag(" "), not_banned_process)(input)
+}
+
 pub fn not_ending<T, E: ParseError<T>>(input: T) -> IResult<T, T, E>
 where
     T: InputTakeAtPosition,
@@ -48,6 +71,33 @@ where
         },
         ErrorKind::AlphaNumeric,
     )
+}
+
+fn not_banned(input: &str) -> IResult<&str, &str> {
+    is_not("[]{}, ")(input)
+}
+
+fn not_banned_process(input: &str) -> IResult<&str, Arg> {
+    let (res, arg) = not_banned(input)?;
+    match ExpressionVariable::try_from(arg) {
+        Ok(arg) => Ok((res, Arg::Arg(arg))),
+        Err(_) => Err(Err::Error(Error::new(input, ErrorKind::SeparatedList))),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Arg {
+    Arg(ExpressionVariable),
+    Collection(Vec<ExpressionVariable>),
+    NamedCollection(String, Vec<ExpressionVariable>),
+}
+
+fn arg_process(input: &str) -> IResult<&str, Arg> {
+    alt((bracket_args_process, named_args_process, not_banned_process))(input)
+}
+
+fn complex_arg_list(input: &str) -> IResult<&str, Vec<Arg>> {
+    separated_list1(tuple((multispace0, tag(","), multispace0)), arg_process)(input)
 }
 
 /// A combinator that wraps an `inner` parser with a leading `start` tag and an ending `end`,
@@ -78,45 +128,61 @@ pub fn bracket_args(input: &str) -> IResult<&str, Vec<&str>> {
     delimited_args("[", arg_list, "]")(input)
 }
 
+fn bracket_args_process(input: &str) -> IResult<&str, Arg> {
+    let (res, args) = bracket_args(input)?;
+    let args = args
+        .into_iter()
+        .map(|arg| ExpressionVariable::try_from(arg))
+        .collect::<Result<Vec<ExpressionVariable>>>();
+
+    match args {
+        Ok(args) => Ok((res, Arg::Collection(args))),
+        Err(_) => Err(Err::Failure(Error::new(input, ErrorKind::SeparatedList))),
+    }
+}
+
 /// Matches a list of space separated arguments with [arg_list] surrounded by a \{\{ and \}\}.
 ///
 /// # Example
 /// ```
-/// use reports::parser::curly_args;
-/// assert_eq!(curly_args("{{ one two three }}"), Ok(("", vec!["one", "two", "three"])));
+/// use reports::parser::{curly_args, Arg};
+/// use reports::pre_process::block::ExpressionVariable;
+/// use reports::time_span::TimeFrequency;
+/// assert_eq!(curly_args("{{ Daily Monthly }}"), Ok(("", vec![Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Daily)), Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Monthly))] )));
 /// ```
-pub fn curly_args(input: &str) -> IResult<&str, Vec<&str>> {
-    delimited_args("{{", arg_list, "}}")(input)
+pub fn curly_args(input: &str) -> IResult<&str, Vec<Arg>> {
+    delimited_args("{{", space_list, "}}")(input)
 }
 
 /// Matches a list of space separated arguments with [arg_list] surrounded by a \{\{# and \}\}
-///
-/// # Example
-/// ```
-/// use reports::parser::curly_block_args;
-/// assert_eq!(curly_block_args("{{# one two three }}"), Ok(("", vec!["one", "two", "three"])));
-/// ```
-pub fn curly_block_args(input: &str) -> IResult<&str, Vec<&str>> {
-    delimited_args("{{#", arg_list, "}}")(input)
+pub fn curly_block_args(input: &str) -> IResult<&str, Vec<Arg>> {
+    delimited_args("{{#", complex_arg_list, "}}")(input)
 }
 
 /// Matches many named arguments with the form arg_name=\[arg arg arg\]
-///
-/// # Example
-/// ```
-/// use reports::parser::named_args;
-/// assert_eq!(named_args("arg=[one two three]"), Ok(("", vec![("arg", vec!["one", "two", "three"])])));
-/// ```
-pub fn named_args(input: &str) -> IResult<&str, Vec<(&str, Vec<&str>)>> {
-    many0(separated_pair(
+pub fn named_args(input: &str) -> IResult<&str, (&str, Vec<&str>)> {
+    separated_pair(
         alphanumeric1,
         tag("="),
         terminated(bracket_args, multispace0),
-    ))(input)
+    )(input)
 }
 
 fn arg_and_named_args(input: &str) -> IResult<&str, (&str, Vec<(&str, Vec<&str>)>)> {
-    pair(terminated(alphanumeric1, multispace1), named_args)(input)
+    pair(terminated(alphanumeric1, multispace1), many1(named_args))(input)
+}
+
+fn named_args_process(input: &str) -> IResult<&str, Arg> {
+    let (res, (name, args)) = named_args(input)?;
+    let args = args
+        .into_iter()
+        .map(|arg| ExpressionVariable::try_from(arg))
+        .collect::<Result<Vec<ExpressionVariable>>>();
+
+    match args {
+        Ok(args) => Ok((res, Arg::NamedCollection(name.to_string(), args))),
+        Err(_) => Err(Err::Failure(Error::new(input, ErrorKind::SeparatedList))),
+    }
 }
 
 /// Matches a named expression with the form {{* arg arg=[one two three] arg=[four five six] }}
@@ -134,7 +200,7 @@ pub fn named_expression(input: &str) -> IResult<&str, (&str, Vec<(&str, Vec<&str
 }
 
 /// Matches a block with the form {{# arg arg }}anything{{/#}}
-pub fn block_args(input: &str) -> IResult<&str, (Vec<&str>, Vec<Segment>, &str)> {
+pub fn block_args(input: &str) -> IResult<&str, (Vec<Arg>, Vec<Segment>, &str)> {
     terminated(
         tuple((
             // Passing on the consumed length is so that children of a block can adjust their positioning by the size of the opening clause
@@ -195,7 +261,10 @@ pub fn expression_tree(input: &str) -> IResult<&str, Segment> {
     map_res::<_, _, _, _, anyhow::Error, _, _>(curly_args, |exp| {
         let vars = exp
             .into_iter()
-            .map(|var| ExpressionVariable::try_new(var))
+            .map(|var| match var {
+                Arg::Arg(arg) => Ok(arg),
+                arg => Err(anyhow!("{:?} is not valid inside an expression", arg)),
+            })
             .collect::<Result<Vec<ExpressionVariable>>>()?;
         Ok(Segment::Expression(Expression::from(vars)))
     })(input)
@@ -209,7 +278,7 @@ pub fn named_expression_tree(input: &str) -> IResult<&str, Segment> {
                 Ok((
                     key.to_string(),
                     val.into_iter()
-                        .map(|v| Ok(ExpressionVariable::try_new(v)?))
+                        .map(|v| Ok(ExpressionVariable::try_from(v)?))
                         .collect::<Result<Vec<_>>>()?,
                 ))
             })
@@ -223,19 +292,21 @@ pub fn named_expression_tree(input: &str) -> IResult<&str, Segment> {
 pub fn block_expression_tree(input: &str) -> IResult<&str, Segment> {
     map_res::<_, _, _, _, anyhow::Error, _, _>(block_args, |(args, mut nodes, filler)| {
         nodes.push(Segment::Text(Text(filler.to_string())));
-        let node = SegmentNode::new(
-            Expression::from(
-                args.into_iter()
-                    .map(|var| ExpressionVariable::try_new(var))
-                    .collect::<Result<Vec<_>>>()?,
-            ),
-            nodes,
-        );
+        let mut expr_args: Vec<ExpressionVariable> = vec![];
+        let mut group_args: Vec<Vec<ExpressionVariable>> = vec![];
+        for arg in args {
+            match arg {
+                Arg::Arg(arg) => expr_args.push(arg),
+                Arg::Collection(args) => group_args.push(args),
+                _ => (),
+            }
+        }
+        let node = SegmentNode::new(Expression::from(expr_args), nodes, group_args);
         Ok(Segment::Node(node))
     })(input)
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 /// A parsed section of text.
 pub enum Segment {
     Expression(Expression),
@@ -244,15 +315,20 @@ pub enum Segment {
     Text(Text),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SegmentNode {
     pub value: Expression,
     pub children: Vec<Segment>,
+    pub group: Vec<Vec<ExpressionVariable>>,
 }
 
 impl SegmentNode {
-    fn new(value: Expression, children: Vec<Segment>) -> Self {
-        SegmentNode { value, children }
+    fn new(value: Expression, children: Vec<Segment>, group: Vec<Vec<ExpressionVariable>>) -> Self {
+        SegmentNode {
+            value,
+            children,
+            group,
+        }
     }
 }
 
@@ -288,9 +364,21 @@ impl From<Vec<Segment>> for Node {
                 Segment::Expression(e) => node.add_child(Box::new(e)),
                 Segment::ExpressionNamedCollection(e) => node.add_child(Box::new(e)),
                 Segment::Node(e) => {
-                    let mut sub_node = Node::from(e.children);
-                    sub_node.value = e.value;
-                    node.add_child(Box::new(sub_node));
+                    if e.group.len() == 0 {
+                        let mut sub_node = Node::from(e.children.clone());
+                        sub_node.value = e.value.clone();
+                        node.add_child(Box::new(sub_node));
+                    } else {
+                        let mut sub_node = Node::new(e.value.clone());
+                        for member in e.group {
+                            for sub_member in member {
+                                let mut member_node = Node::from(e.children.clone());
+                                member_node.value += sub_member;
+                                sub_node.add_child(Box::new(member_node))
+                            }
+                        }
+                        node.add_child(Box::new(sub_node));
+                    }
                 }
                 Segment::Text(e) => node.add_child(Box::new(e)),
             }
@@ -333,10 +421,45 @@ pub fn parse_date(input: &str) -> Result<NaiveDate> {
 
 #[cfg(test)]
 mod tests {
-    use crate::pre_process::tree::Component;
+    use crate::{pre_process::tree::Component, TimeFrequency};
     use nom::Err;
 
     use super::*;
+
+    #[test]
+    fn test_space_list() {
+        let (res, args) = space_list("Daily Quarterly").unwrap();
+        assert_eq!(res, "");
+        assert_eq!(
+            args,
+            vec![
+                Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Daily)),
+                Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly))
+            ]
+        )
+    }
+
+    #[test]
+    fn test_complex_arg_list() {
+        let (res, args) = complex_arg_list("Monthly, rows=[Daily Quarterly], [Yearly]").unwrap();
+        assert_eq!(res, "");
+        assert_eq!(
+            args,
+            vec![
+                Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Monthly)),
+                Arg::NamedCollection(
+                    "rows".to_string(),
+                    vec![
+                        ExpressionVariable::TimeFrequency(TimeFrequency::Daily),
+                        ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly)
+                    ]
+                ),
+                Arg::Collection(vec![ExpressionVariable::TimeFrequency(
+                    TimeFrequency::Yearly
+                )])
+            ]
+        )
+    }
 
     #[test]
     fn test_skip_text() {
@@ -352,11 +475,6 @@ mod tests {
 
     #[test]
     fn test_named_expression() {
-        assert_eq!(
-            named_args("rows=[Monthly Quarterly]").unwrap(),
-            ("", vec![("rows", vec!["Monthly", "Quarterly"])])
-        );
-
         let (_, (command, named)) =
             named_expression("{{* table rows=[Monthly Quarterly] cols=[cat_purrs dog_woofs]}}")
                 .unwrap();
@@ -407,6 +525,33 @@ mod tests {
             block_expression_tree("blah"),
             Err(Err::Error(Error::new("blah", ErrorKind::Tag)))
         );
+
+        let (res, seg) =
+            block_expression_tree("{{# [cat_purrs dog_woofs] }} {{fig}} {{/#}}").unwrap();
+        assert_eq!(res, "");
+        match &seg {
+            Segment::Node(n) => {
+                assert_eq!(
+                    n.group,
+                    vec![vec![
+                        ExpressionVariable::DataName("cat_purrs".to_string()),
+                        ExpressionVariable::DataName("dog_woofs".to_string())
+                    ]]
+                );
+            }
+            _ => panic!("Wrong type of Segment"),
+        }
+
+        let mut node = Node::from(vec![seg]);
+
+        let mut exp = Expression::new();
+        exp.set_command("fig".to_string());
+        exp.set_date(NaiveDate::from_ymd(2022, 2, 4));
+        exp.set_frequency(TimeFrequency::Weekly);
+
+        let both = node.render(&exp).unwrap();
+
+        assert_eq!(both, " 10  25 ".to_string());
     }
 
     #[test]
@@ -430,19 +575,19 @@ mod tests {
         );
 
         assert_eq!(
-            rendered("{{# cat_purrs 2022-02-04}}{{ Weekly change}}{{/#}}").unwrap(),
+            rendered("{{# cat_purrs, 2022-02-04}}{{ Weekly change}}{{/#}}").unwrap(),
             "25.0%".to_string()
         );
         assert_eq!(
             rendered(
-                "junk {{# cat_purrs 2022-02-04 Words}} more junk {{ Weekly change }} next junk {{/#}} final junk"
+                "junk {{# cat_purrs, 2022-02-04, Words}} more junk {{ Weekly change }} next junk {{/#}} final junk"
             )
             .unwrap(),
             "junk  more junk up 25.0% next junk  final junk".to_string()
         );
         assert_eq!(
             rendered(
-                "{{# cat_purrs 2022-02-04 }}{{*table rows=[Weekly Quarterly] cols=[change avg_freq]}}{{/#}}"
+                "{{# cat_purrs, 2022-02-04 }}{{*table rows=[Weekly Quarterly] cols=[change avg_freq]}}{{/#}}"
             )
             .unwrap(),
             "

@@ -6,7 +6,7 @@ pub trait Component {
     fn render(&mut self, ctx: &Expression) -> Result<String>;
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Text(pub String);
 
 impl Component for Text {
@@ -83,7 +83,7 @@ mod tests {
         let date = NaiveDate::from_ymd(2022, 2, 4);
         let mut vars = Vec::new();
         for var in ["Weekly", "cat_purrs", "change"] {
-            vars.push(ExpressionVariable::try_new(var).unwrap());
+            vars.push(ExpressionVariable::try_from(var).unwrap());
         }
         let vars_2 = vec![ExpressionVariable::Command("avg_freq".to_string())];
         let vars_3 = vec![ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly)];

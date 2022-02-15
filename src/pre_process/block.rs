@@ -96,25 +96,27 @@ pub enum ExpressionVariable {
     RenderContext(RenderContext),
 }
 
-impl ExpressionVariable {
-    pub fn try_new(s: &str) -> Result<Self> {
-        if COMMANDS.contains(s) {
-            Ok(ExpressionVariable::Command(s.to_string()))
-        } else if FREQUENCIES.contains(s) {
+impl TryFrom<&str> for ExpressionVariable {
+    type Error = Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        if COMMANDS.contains(value) {
+            Ok(ExpressionVariable::Command(value.to_string()))
+        } else if FREQUENCIES.contains(value) {
             Ok(ExpressionVariable::TimeFrequency(
-                s.parse::<TimeFrequency>()?,
+                value.parse::<TimeFrequency>()?,
             ))
-        } else if DISPLAY_TYPES.contains(s) {
+        } else if DISPLAY_TYPES.contains(value) {
             Ok(ExpressionVariable::RenderContext(
-                s.parse::<RenderContext>()?,
+                value.parse::<RenderContext>()?,
             ))
-        } else if DATA_NAMES.contains(&s.to_string()) {
-            Ok(ExpressionVariable::DataName(s.to_string()))
+        } else if DATA_NAMES.contains(&value.to_string()) {
+            Ok(ExpressionVariable::DataName(value.to_string()))
         } else {
-            if let Ok(date) = parser::parse_date(s) {
+            if let Ok(date) = parser::parse_date(value) {
                 Ok(ExpressionVariable::Date(date))
             } else {
-                return Err(anyhow!("Unknown key word: {}", s));
+                return Err(anyhow!("Unknown key word: {}", value));
             }
         }
     }
@@ -411,7 +413,7 @@ mod tests {
         let date = NaiveDate::from_ymd(2022, 2, 4);
         expr.set_date(date);
         for var in ["Weekly", "change", "cat_purrs", "Words"] {
-            expr += ExpressionVariable::try_new(var).unwrap()
+            expr += ExpressionVariable::try_from(var).unwrap()
         }
         let result = String::try_from(Command::try_from(&expr).unwrap()).unwrap();
 

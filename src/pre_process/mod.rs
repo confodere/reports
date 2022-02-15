@@ -208,7 +208,7 @@ mod tests {
             {{span}}
             {{/#}}
             
-            {{# cat_purrs Words Quarterly }}
+            {{# cat_purrs, Words, Quarterly }}
             {{name}} are {{change}} since {{prev}}
             {{/#}}"
                 .to_string(),
@@ -241,10 +241,10 @@ mod tests {
             "
 # Sample
 
-- {{# website_visits Words }}Total website users were {{change Weekly}}, we are now averaging {{avg_freq Daily }}.
+- {{# website_visits, Words }}Total website users were {{change Weekly}}, we are now averaging {{avg_freq Daily }}.
 - {{name}} are {{change Yearly }} compared to this same reporting period last year {{prev Yearly}}.{{/#}}
             
-- {{# cat_purrs Words }}{{name}} are {{change Quarterly}} since {{prev Quarterly}}{{/#}}"
+- {{# cat_purrs, Words }}{{name}} are {{change Quarterly}} since {{prev Quarterly}}{{/#}}"
                 .to_string(),
             "test.md",
             vec![],
@@ -306,6 +306,36 @@ mod tests {
 | cat_purrs | 10 | A measure of the number of times my cat purred |
 | dog_woofs | 25 | A measure of the number of times my dog woofed |
 | fish_zooms | 3 | A measure of the number of times my fish zoomed |
+"
+        );
+    }
+
+    #[test]
+    fn test_group() {
+        let mut ch = Chapter::new(
+            "test",
+            "{{# Weekly, [cat_purrs dog_woofs fish_zooms]}}
+# {{name}}
+{{fig}}
+{{/#}}"
+                .to_string(),
+            "test.md",
+            vec![],
+        );
+        let date = NaiveDate::from_ymd(2022, 2, 4);
+
+        assert_eq!(pre_process_blocks(&mut ch, date).unwrap(), ());
+        assert_eq!(
+            ch.content,
+            "
+# Cat Purrs
+10
+
+# Dog Woofs
+25
+
+# Fish Zooms
+3
 "
         );
     }
