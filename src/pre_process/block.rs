@@ -14,21 +14,20 @@ use crate::{Data, RenderContext, TimeFrequency};
 use super::tree::Component;
 
 lazy_static! {
-    static ref COMMANDS: HashSet<&'static str> = {
+    static ref COMMANDS: HashMap<&'static str, &'static str> = {
         [
-            "fig",
-            "name",
-            "description",
-            "span",
-            "prev",
-            "change",
-            "avg_freq",
-            "col",
-            "row",
-            "table",
+            ("fig", "Number"),
+            ("name", "Name"),
+            ("description", "Description"),
+            ("span", "Time Span"),
+            ("prev", "Previous Time Span"),
+            ("change", "Change"),
+            ("avg_freq", "Figure per Frequency"),
+            ("col", "Column"),
+            ("row", "Row"),
+            ("table", "Table"),
         ]
-        .iter()
-        .cloned()
+        .into_iter()
         .collect()
     };
     static ref FREQUENCIES: HashSet<&'static str> = {
@@ -39,7 +38,7 @@ lazy_static! {
     };
     static ref DISPLAY_TYPES: HashSet<&'static str> =
         ["Words", "Numbers",].iter().cloned().collect();
-    static ref DATA_NAMES: HashSet<String> = Data::read_names().unwrap().iter().cloned().collect();
+    static ref DATA_NAMES: HashMap<String, String> = Data::read_names().unwrap();
 }
 
 pub struct CommandFreq {
@@ -100,7 +99,7 @@ impl TryFrom<&str> for ExpressionVariable {
     type Error = Error;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        if COMMANDS.contains(value) {
+        if COMMANDS.keys().any(|name| name == &value) {
             Ok(ExpressionVariable::Command(value.to_string()))
         } else if FREQUENCIES.contains(value) {
             Ok(ExpressionVariable::TimeFrequency(
@@ -110,7 +109,7 @@ impl TryFrom<&str> for ExpressionVariable {
             Ok(ExpressionVariable::RenderContext(
                 value.parse::<RenderContext>()?,
             ))
-        } else if DATA_NAMES.contains(&value.to_string()) {
+        } else if DATA_NAMES.keys().any(|name| name == &value.to_string()) {
             Ok(ExpressionVariable::DataName(value.to_string()))
         } else {
             if let Ok(date) = parser::parse_date(value) {
@@ -147,9 +146,21 @@ impl Add<ExpressionVariable> for Expression {
 impl Display for ExpressionVariable {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            ExpressionVariable::Command(command) => command.fmt(f),
+            ExpressionVariable::Command(command) => {
+                if let Some(name) = COMMANDS.get(command.as_str()) {
+                    name.fmt(f)
+                } else {
+                    panic!("Unknown command {command}")
+                }
+            }
             ExpressionVariable::TimeFrequency(frequency) => frequency.fmt(f),
-            ExpressionVariable::DataName(data_name) => data_name.fmt(f),
+            ExpressionVariable::DataName(data_name) => {
+                if let Some(name) = DATA_NAMES.get(data_name) {
+                    name.fmt(f)
+                } else {
+                    panic!("Data name missing for {data_name}")
+                }
+            }
             ExpressionVariable::RenderContext(display_type) => display_type.fmt(f),
             ExpressionVariable::Date(date) => date.format("%Y-%m-%d").fmt(f),
         }

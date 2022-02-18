@@ -21,7 +21,7 @@ const READ_DATA: &str = r#"
     WHERE name = ?1"#;
 
 const READ_DATA_NAMES: &str = "
-    SELECT DISTINCT name FROM Data;
+    SELECT name, long_name FROM Data;
 ";
 
 const READ_METRIC: &str = r#"
@@ -216,18 +216,17 @@ impl Data {
         Data::from_name(&conn, name, date)
     }
 
-    pub fn read_names() -> rusqlite::Result<Vec<String>> {
+    pub fn read_names() -> Result<HashMap<String, String>> {
         let conn = Connection::open(DATABASE_FILE)?;
         let mut stmt = conn.prepare(READ_DATA_NAMES)?;
 
-        let rows = stmt.query_and_then([], |row| row.get::<_, String>(0))?;
+        let rows = stmt
+            .query_and_then([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<HashMap<_, _>>>()?;
 
-        let mut names = Vec::new();
-        for name in rows {
-            names.push(name?)
-        }
-
-        Ok(names)
+        Ok(rows)
     }
 
     fn from_name(conn: &Connection, name: &String, date: &NaiveDate) -> rusqlite::Result<Data> {

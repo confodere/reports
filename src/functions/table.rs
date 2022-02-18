@@ -27,18 +27,21 @@ impl TryFrom<Table<'_>> for String {
 
     fn try_from(value: Table<'_>) -> Result<Self, Self::Error> {
         let mut table = String::from("\n| _ |");
+        // Column Headers
         for col in &value.cols {
-            // Column Headers
             table.push_str(&format!(" {} |", &col.to_string()));
         }
         table.push_str("\n|");
+        // Header Separator
         for _ in 0..&value.cols.len() + 1 {
             table.push_str(" --- |");
         }
+        // Rows
         for row in &value.rows {
             let ctx = value.ctx.clone() + row.clone();
             // Row Heading
             table.push_str(&format!("\n| {} |", row.to_string()));
+            // Row Cells
             for col in &value.cols {
                 let ctx = ctx.clone() + col.clone();
                 table.push_str(&format!(
