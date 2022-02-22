@@ -6,84 +6,24 @@ use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use nom::bytes::complete::{is_not, take_until1};
 use nom::character::complete::digit1;
-use nom::Parser;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until},
     character::complete::{alphanumeric1, multispace0},
-    error::{ErrorKind, ParseError},
+    error::ParseError,
     multi::{many0, separated_list1},
     sequence::{delimited, pair, separated_pair, terminated, tuple},
-    AsChar, IResult, InputTakeAtPosition,
+    IResult,
 };
 use std::collections::HashMap;
 use std::ops::Deref;
 
 pub mod substitute;
 
-/// Matches space separated alphanumeric arguments.
-///
-/// # Example
-/// ```
-/// use nom::error::{Error, ErrorKind};
-/// use nom::Err;
-/// use reports::parser::arg_list;
-/// assert_eq!(arg_list("one"), Ok(("", vec!["one"])));
-/// assert_eq!(arg_list("one two three"), Ok(("", vec!["one", "two", "three"])));
-/// assert_eq!(arg_list(" "), Err(Err::Error((Error{input: " ", code: ErrorKind::AlphaNumeric}))));
-/// ```
-pub fn arg_list(input: &str) -> IResult<&str, Vec<&str>> {
-    sep_space_list(tag(","), not_banned)(input)
-}
-
-/// A combinator that wraps an `inner` parser with a leading `start` tag and an ending `end`,
-/// returning the output of `inner`.
-fn sep_space_list<'a, T, F: 'a, O, O2, E: ParseError<&'a str>>(
-    separator: T,
-    inner: F,
-) -> impl FnMut(&'a str) -> IResult<&'a str, Vec<O>, E>
-where
-    T: Parser<&'a str, O2, E>,
-    F: Fn(&'a str) -> IResult<&'a str, O, E>,
-{
-    separated_list1(tuple((multispace0, separator, multispace0)), inner)
-}
-
-pub fn comma_list(input: &str) -> IResult<&str, Vec<Arg>> {
-    sep_space_list(tag(","), not_banned_process)(input)
-}
-
-pub fn space_list(input: &str) -> IResult<&str, Vec<Arg>> {
-    separated_list1(tag(" "), not_banned_process)(input)
-}
-
-pub fn not_ending<T, E: ParseError<T>>(input: T) -> IResult<T, T, E>
-where
-    T: InputTakeAtPosition,
-    <T as InputTakeAtPosition>::Item: AsChar,
-{
-    input.split_at_position1_complete(
-        |item| {
-            let c = item.as_char();
-            !c.is_ascii_alphabetic()
-                && ((c.to_string() == "}") || (c.to_string() == "]") || (c.is_whitespace()))
-        },
-        ErrorKind::AlphaNumeric,
-    )
-}
-
-fn not_banned(input: &str) -> IResult<&str, &str> {
-    is_not("[]{}, ")(input)
-}
-
-fn not_banned_process(input: &str) -> IResult<&str, Arg> {
-    let (res, arg) = not_banned(input)?;
-    Ok((res, Arg::Arg(arg)))
-}
-
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Arg<'a> {
     Arg(&'a str),
+    NamedArg(&'a str, &'a str),
     Collection(Vec<&'a str>),
     NamedCollection(&'a str, Vec<&'a str>),
 }
@@ -97,6 +37,7 @@ impl<'a> From<Vec<Arg<'a>>> for FlatArgs<'a> {
         for arg in args.iter() {
             match arg {
                 Arg::Arg(a) => solo.push(*a),
+                Arg::NamedArg(_, _) => todo!(),
                 Arg::Collection(a) => {
                     if group.len() > longest {
                         longest = group.len()
@@ -197,18 +138,10 @@ impl Deref for ArgExpression {
     }
 }
 
-fn arg_process(input: &str) -> IResult<&str, Arg> {
-    // Returns Arg::Collection, Arg::NamedCollection, Arg::Arg
-    alt((bracket_args_process, named_args_process, not_banned_process))(input)
-}
-
-fn complex_arg_list(input: &str) -> IResult<&str, Vec<Arg>> {
-    separated_list1(tuple((multispace0, tag(","), multispace0)), arg_process)(input)
-}
-
 /// A combinator that wraps an `inner` parser with a leading `start` tag and an ending `end`,
 /// returning the output of `inner`.
-fn delimited_args<'a, F: 'a, O, E: ParseError<&'a str>>(
+/// Accepts optional spacing after `start` and before `end`.
+fn delimited_start_func_end<'a, F: 'a, O, E: ParseError<&'a str>>(
     start: &'a str,
     inner: F,
     end: &'a str,
@@ -223,20 +156,126 @@ where
     )
 }
 
+/// Matches comma separated keywords.
+/// # Example
+///
+/// ```
+/// use reports::parser::comma_separated_keywords;
+/// use nom::error::{Error, ErrorKind};
+/// use nom::Err;
+/// assert_eq!(comma_separated_keywords("one, two, three"), Ok(("", vec!["one", "two", "three"])));
+/// assert_eq!(comma_separated_keywords(" "), Err(Err::Error((Error{input: " ", code: ErrorKind::IsNot}))));
+/// ```
+pub fn comma_separated_keywords(input: &str) -> IResult<&str, Vec<&str>> {
+    separated_list1(
+        tuple((multispace0, tag(","), multispace0)),
+        while_not_control_character,
+    )(input)
+}
+
+/// Matches a single named keyword with the form name=keyword
+fn named_keyword(input: &str) -> IResult<&str, (&str, &str)> {
+    separated_pair(
+        alphanumeric1,
+        tag("="),
+        terminated(while_not_control_character, multispace0),
+    )(input)
+}
+
+/// Matches anything until one of `[]{}, `
+fn while_not_control_character(input: &str) -> IResult<&str, &str> {
+    is_not("[]{}, ")(input)
+}
+
+/// Matches many named arguments with the form arg_name=\[arg, arg, arg\]
+pub fn named_square_bracket_delimited_keywords(input: &str) -> IResult<&str, (&str, Vec<&str>)> {
+    separated_pair(
+        alphanumeric1,
+        tag("="),
+        terminated(square_bracket_delimited_args, multispace0),
+    )(input)
+}
+
 /// Matches a list of space separated arguments with [arg_list] surrounded by a \[ and \].
 ///
 /// # Example
 /// ```
-/// use reports::parser::bracket_args;
-/// assert_eq!(bracket_args("[one two three]"), Ok(("", vec!["one", "two", "three"])));
+/// use reports::parser::square_bracket_delimited_args;
+/// assert_eq!(square_bracket_delimited_args("[one, two, three]"), Ok(("", vec!["one", "two", "three"])));
 /// ```
-pub fn bracket_args(input: &str) -> IResult<&str, Vec<&str>> {
-    delimited_args("[", arg_list, "]")(input)
+pub fn square_bracket_delimited_args(input: &str) -> IResult<&str, Vec<&str>> {
+    delimited_start_func_end("[", comma_separated_keywords, "]")(input)
 }
 
-fn bracket_args_process(input: &str) -> IResult<&str, Arg> {
-    let (res, args) = bracket_args(input)?;
+/// Matches a named single [Arg] with the form `name=arg`
+fn named_single_arg(input: &str) -> IResult<&str, Arg> {
+    let (res, (name, arg)) = named_keyword(input)?;
+    Ok((res, Arg::NamedArg(name, arg)))
+}
+
+/// Matches a single [Arg]
+fn unnamed_single_arg(input: &str) -> IResult<&str, Arg> {
+    let (res, arg) = while_not_control_character(input)?;
+    Ok((res, Arg::Arg(arg)))
+}
+
+/// Matches a list of named comma separated arguments surrounded by brackets.
+/// E.g. `one=[two, three, four]`
+fn named_list_arg(input: &str) -> IResult<&str, Arg> {
+    let (res, (name, args)) = named_square_bracket_delimited_keywords(input)?;
+    Ok((res, Arg::NamedCollection(name, args)))
+}
+
+/// Matches a list of comma separated arguments surrounded by brackets.
+/// E.g. `\[one, two, three\]`
+fn unnamed_list_arg(input: &str) -> IResult<&str, Arg> {
+    let (res, args) = square_bracket_delimited_args(input)?;
     Ok((res, Arg::Collection(args)))
+}
+
+/// Matches the next [Arg]
+fn find_arg(input: &str) -> IResult<&str, Arg> {
+    // Returns Arg::Collection, Arg::NamedCollection, Arg::Arg
+    alt((
+        unnamed_list_arg,
+        named_list_arg,
+        named_single_arg,
+        unnamed_single_arg,
+    ))(input)
+}
+
+/// Matches an alphanumeric keyword, and then a list of comma separated arguments (after a separating comma).
+fn arg_and_named_args(input: &str) -> IResult<&str, (&str, Vec<Arg>)> {
+    pair(
+        terminated(alphanumeric1, tuple((multispace0, tag(","), multispace0))),
+        comma_separated_args,
+    )(input)
+}
+
+/// Matches a list of comma separated arguments e.g. `one, two, three`.
+/// Accepts optional spaces before and after comma.
+fn comma_separated_args(input: &str) -> IResult<&str, Vec<Arg>> {
+    separated_list1(tuple((multispace0, tag(","), multispace0)), find_arg)(input)
+}
+
+/// Matches a list of space separated arguments with [arg_list] surrounded by a \{\{# and \}\}
+pub fn curly_hash_delimited_args(input: &str) -> IResult<&str, Vec<Arg>> {
+    delimited_start_func_end("{{#", comma_separated_args, "}}")(input)
+}
+
+/// Matches a named expression with the form {{* arg, arg=[one, two, three], arg=[four, five, six] }}
+///
+/// # Example
+/// ```
+/// use reports::parser::curly_star_delimited_args;
+/// use reports::parser::Arg;
+/// assert_eq!(
+///     curly_star_delimited_args("{{* arg, arg=[one, two, three], arg=[four, five, six] }}"),
+///     Ok(("", ("arg", vec![Arg::NamedCollection("arg", vec!["one", "two", "three"]), Arg::NamedCollection("arg", vec!["four", "five", "six"])])))
+/// );
+/// ```
+pub fn curly_star_delimited_args(input: &str) -> IResult<&str, (&str, Vec<Arg>)> {
+    delimited_start_func_end("{{*", arg_and_named_args, "}}")(input)
 }
 
 /// Matches a list of space separated arguments with [arg_list] surrounded by a \{\{ and \}\}.
@@ -248,111 +287,54 @@ fn bracket_args_process(input: &str) -> IResult<&str, Arg> {
 /// use reports::time_span::TimeFrequency;
 /// assert_eq!(curly_args("{{ Daily Monthly }}"), Ok(("", vec![Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Daily)), Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Monthly))] )));
 /// ```
-pub fn curly_args(input: &str) -> IResult<&str, Vec<Arg>> {
-    delimited_args("{{", complex_arg_list, "}}")(input)
+pub fn curly_delimited_args(input: &str) -> IResult<&str, Vec<Arg>> {
+    delimited_start_func_end("{{", comma_separated_args, "}}")(input)
 }
 
-/// Matches a list of space separated arguments with [arg_list] surrounded by a \{\{# and \}\}
-pub fn curly_block_args(input: &str) -> IResult<&str, Vec<Arg>> {
-    delimited_args("{{#", complex_arg_list, "}}")(input)
-}
-
-/// Matches many named arguments with the form arg_name=\[arg arg arg\]
-pub fn named_args(input: &str) -> IResult<&str, (&str, Vec<&str>)> {
-    separated_pair(
-        alphanumeric1,
-        tag("="),
-        terminated(bracket_args, multispace0),
-    )(input)
-}
-
-fn arg_and_named_args(input: &str) -> IResult<&str, (&str, Vec<Arg>)> {
-    pair(
-        terminated(alphanumeric1, tuple((multispace0, tag(","), multispace0))),
-        complex_arg_list,
-    )(input)
-}
-
-fn named_args_process(input: &str) -> IResult<&str, Arg> {
-    let (res, (name, args)) = named_args(input)?;
-    Ok((res, Arg::NamedCollection(name, args)))
-}
-
-/// Matches a named expression with the form {{* arg arg=[one two three] arg=[four five six] }}
-///
-/// # Example
-/// ```
-/// use reports::parser::named_expression;
-/// assert_eq!(
-///     named_expression("{{* arg arg=[one two three] arg=[four five six] }}"),
-///     Ok(("", ("arg", vec![("arg", vec!["one", "two", "three"]), ("arg", vec!["four", "five", "six"])])))
-/// );
-/// ```
-pub fn named_expression(input: &str) -> IResult<&str, (&str, Vec<Arg>)> {
-    delimited_args("{{*", arg_and_named_args, "}}")(input)
-}
-
-/// Matches a block with the form {{# arg arg }}anything{{/#}}
-pub fn block_args(input: &str) -> IResult<&str, Clause> {
-    let (res, (args, inner)) =
-        terminated(pair(curly_block_args, take_until("{{/#}}")), tag("{{/#}}"))(input)?;
-    let (inner_res, mut clauses) = expression(inner)?;
+/// Matches a block with the form {{# arg, arg }}anything{{/#}}
+fn block_clause(input: &str) -> IResult<&str, Clause> {
+    let (res, (args, inner)) = terminated(
+        pair(curly_hash_delimited_args, take_until("{{/#}}")),
+        tag("{{/#}}"),
+    )(input)?;
+    let (inner_res, mut clauses) = find_clauses(inner)?;
     if inner_res.len() > 0 {
         clauses.push(Clause::Text(inner_res));
     }
     Ok((res, Clause::Block(args, clauses)))
 }
 
-/*/// Returns a matched collection of statements by:
-/// taking until the start of an open/close clause i.e. `{{`,
-/// then mapping the entire clause to a [Statement].
-pub fn expression(input: &str) -> IResult<&str, Vec<LocatedStatement>> {
-    many0(
-        pair(
-            take_until("{{").map(|skipped: &str| skipped.len()),
-            consumed(alt((
-                curly_args.map(|exp| Statement::Expression(exp)),
-                named_expression.map(|(var, exp)| Statement::ExpressionNamedCollection(var, exp)),
-                block_args.map(|((mut opening_len, args), children)| {
-                    let mut children = Statements(children);
-                    children.adjust(&mut opening_len);
-                    Statement::Block(args, children)
-                }),
-            ))),
-        )
-        // Skipped refers to ignored text before an opening clause
-        // Consumed refers to the text in an expression clause
-        // By creating a [LocatedStatement] with these values in a [Range<usize>],
-        // they track the relative positioning of a clause
-        .map(|(skipped, (consumed, statement))| {
-            LocatedStatement(skipped..(skipped + consumed.len()), statement)
-        }),
-    )(input)
-}*/
+/// Matches an expression with the form {{*function, arg, arg}}
+fn function_clause(input: &str) -> IResult<&str, Clause> {
+    let (res, (name, function)) = curly_star_delimited_args(input)?;
 
+    Ok((res, Clause::Function(name, function)))
+}
+
+/// Matches an expression with the form {{arg, arg}}
+fn expression_clause(input: &str) -> IResult<&str, Clause> {
+    let (res, args) = curly_delimited_args(input)?;
+
+    Ok((res, Clause::Expression(args)))
+}
+
+/// Skips to next incident of `{{` in `&str`.
+/// Returns `Clause::Text` so that filler is not lost.
 fn skip_text(input: &str) -> IResult<&str, Clause> {
     let (res, text) = take_until1("{{")(input)?;
     Ok((res, Clause::Text(text)))
 }
 
-fn find_clauses(input: &str) -> IResult<&str, Clause> {
-    alt((block_args, function_tree, expression_tree, skip_text))(input)
+/// Matches the next [Clause].
+/// Final match skips to next clause opening
+fn find_clause(input: &str) -> IResult<&str, Clause> {
+    alt((block_clause, function_clause, expression_clause, skip_text))(input)
 }
 
-pub fn expression(input: &str) -> IResult<&str, Vec<Clause>> {
-    many0(find_clauses)(input)
-}
-
-pub fn expression_tree(input: &str) -> IResult<&str, Clause> {
-    let (res, args) = curly_args(input)?;
-
-    Ok((res, Clause::Expression(args)))
-}
-
-pub fn function_tree(input: &str) -> IResult<&str, Clause> {
-    let (res, (name, function)) = named_expression(input)?;
-
-    Ok((res, Clause::Function(name, function)))
+/// Finds all clauses in a `&str` (including text before and between active clauses).
+/// Returns clauses and any remaining text after the last clause.
+pub fn find_clauses(input: &str) -> IResult<&str, Vec<Clause>> {
+    many0(find_clause)(input)
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -383,6 +365,7 @@ impl Clause<'_> {
                             Arg::Arg(a) => {
                                 expr += ExpressionVariable::try_from(*a)?;
                             }
+                            Arg::NamedArg(_, _) => todo!(),
                             Arg::Collection(_) => todo!(),
                             Arg::NamedCollection(name, collection) => {
                                 let collection = collection
@@ -538,7 +521,7 @@ mod tests {
     #[test]
     fn test_clause_translation() {
         let (_, args) =
-            expression("{{#cat_purrs, Words, 2022-02-04, [Quarterly, Weekly]}}Fig: {{fig}} Change: {{change}} {{/#}}")
+            find_clauses("{{#cat_purrs, Words, 2022-02-04, [Quarterly, Weekly]}}Fig: {{fig}} Change: {{change}} {{/#}}")
                 .unwrap();
         let mut node = Node::new(Expression::new());
         for arg in args {
@@ -553,20 +536,20 @@ mod tests {
 
     #[test]
     fn test_complex_arg_list() {
-        let (res, args) = complex_arg_list("one, two, three").unwrap();
+        let (res, args) = comma_separated_args("one, two, three").unwrap();
         assert_eq!(res, "");
         assert_eq!(
             args,
             vec![Arg::Arg("one"), Arg::Arg("two"), Arg::Arg("three")]
         );
 
-        let (res, args) = complex_arg_list("one, [two, three]").unwrap();
+        let (res, args) = comma_separated_args("one, [two, three]").unwrap();
         assert_eq!(res, "");
         assert_eq!(
             args,
             vec![Arg::Arg("one"), Arg::Collection(vec!["two", "three"])]
         );
-        let (res, args) = complex_arg_list("one, two=[three, four]").unwrap();
+        let (res, args) = comma_separated_args("one, two=[three, four]").unwrap();
         assert_eq!(res, "");
         assert_eq!(
             args,
@@ -579,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_expression() {
-        let (res, args) = expression_tree("{{one, two}}").unwrap();
+        let (res, args) = expression_clause("{{one, two}}").unwrap();
         assert_eq!(res, "");
         assert_eq!(
             args,
@@ -589,11 +572,11 @@ mod tests {
 
     #[test]
     fn test_block() {
-        let (res, args) = curly_block_args("{{# one }}{{two}}{{/#}}").unwrap();
+        let (res, args) = curly_hash_delimited_args("{{# one }}{{two}}{{/#}}").unwrap();
         assert_eq!(res, "{{two}}{{/#}}");
         assert_eq!(args, vec![Arg::Arg("one")]);
 
-        let (res, args) = block_args("{{# one }}{{two}}{{/#}}").unwrap();
+        let (res, args) = block_clause("{{# one }}{{two}}{{/#}}").unwrap();
         assert_eq!(res, "");
         assert_eq!(
             args,
@@ -606,14 +589,14 @@ mod tests {
 
     #[test]
     fn test_function() {
-        let (res, args) = function_tree("{{*one, two}}").unwrap();
+        let (res, args) = function_clause("{{*one, two}}").unwrap();
         assert_eq!(res, "");
         assert_eq!(args, Clause::Function("one", vec![Arg::Arg("two")]));
     }
 
     #[test]
     fn test_expressions() {
-        let (res, clauses) = expression("{{# one }}{{two}}{{/#}}{{* three, four}} five").unwrap();
+        let (res, clauses) = find_clauses("{{# one }}{{two}}{{/#}}{{* three, four}} five").unwrap();
         assert_eq!(res, " five");
         assert_eq!(
             clauses,
