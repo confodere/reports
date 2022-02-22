@@ -1,4 +1,7 @@
-use crate::pre_process::block::{Command, Expression, ExpressionVariable};
+use crate::pre_process::{
+    block::{Command, Expression, ExpressionVariable},
+    tree::Component,
+};
 use anyhow::{Error, Result};
 
 /// Table is two dimensional structure that adds one [ExpressionVariable] from each dimension
@@ -6,26 +9,27 @@ use anyhow::{Error, Result};
 ///
 /// A row or column adds the *same* [ExpressionVariable] to the entire row/column,
 /// so that a cross-section of two variables is generated.
-pub struct Table<'a> {
+#[derive(Clone)]
+pub struct Table {
     rows: Vec<ExpressionVariable>,
     cols: Vec<ExpressionVariable>,
-    ctx: &'a Expression,
+    ctx: Expression,
 }
 
-impl<'a> Table<'a> {
+impl Table {
     pub fn new(
         rows: Vec<ExpressionVariable>,
         cols: Vec<ExpressionVariable>,
-        ctx: &'a Expression,
+        ctx: Expression,
     ) -> Self {
         Self { rows, cols, ctx }
     }
 }
 
-impl TryFrom<Table<'_>> for String {
+impl TryFrom<Table> for String {
     type Error = Error;
 
-    fn try_from(value: Table<'_>) -> Result<Self, Self::Error> {
+    fn try_from(value: Table) -> Result<Self, Self::Error> {
         let mut table = String::from("\n| _ |");
         // Column Headers
         for col in &value.cols {
@@ -55,12 +59,19 @@ impl TryFrom<Table<'_>> for String {
     }
 }
 
+impl Component for Table {
+    fn render(&mut self, ctx: &Expression) -> Result<String> {
+        self.ctx.fill_blank(ctx.clone());
+        String::try_from(self.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDate;
-
     use super::*;
+    use crate::RenderContext;
     use crate::TimeFrequency;
+    use chrono::NaiveDate;
 
     #[test]
     fn test_table() {
@@ -68,6 +79,7 @@ mod tests {
         let mut ctx = Expression::new();
         ctx.set_data_name("cat_purrs".to_string());
         ctx.set_date(date);
+        ctx.set_display_type(RenderContext::Numbers);
         let cols = vec![
             ExpressionVariable::TimeFrequency(TimeFrequency::Weekly),
             ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly),
@@ -76,7 +88,7 @@ mod tests {
             ExpressionVariable::Command("change".to_string()),
             ExpressionVariable::Command("avg_freq".to_string()),
         ];
-        let tbl = Table::new(rows, cols, &ctx);
+        let tbl = Table::new(rows, cols, ctx);
         let tbl = String::try_from(tbl).unwrap();
 
         assert_eq!(
@@ -84,8 +96,8 @@ mod tests {
             "
 | _ | Weekly | Quarterly |
 | --- | --- | --- |
-| change | 25.0% | 233.3% |
-| avg_freq | 10.0 | 130.0 |
+| Change | 25.0% | 233.3% |
+| Figure per Frequency | 10.0 | 130.0 |
 "
             .to_string()
         );

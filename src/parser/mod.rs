@@ -1,19 +1,18 @@
+use crate::functions::table::Table;
 use crate::pre_process::block::{Expression, ExpressionNamedCollection, ExpressionVariable};
+use crate::pre_process::tree::Component;
 use crate::pre_process::tree::{Node, Text};
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
 use nom::bytes::complete::{is_not, take_until1};
 use nom::character::complete::digit1;
-use nom::combinator::map_res;
-use nom::Err;
 use nom::Parser;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_until},
-    character::complete::{alphanumeric1, multispace0, multispace1},
-    error::Error,
+    character::complete::{alphanumeric1, multispace0},
     error::{ErrorKind, ParseError},
-    multi::{many0, many1, separated_list1},
+    multi::{many0, separated_list1},
     sequence::{delimited, pair, separated_pair, terminated, tuple},
     AsChar, IResult, InputTakeAtPosition,
 };
@@ -34,7 +33,7 @@ pub mod substitute;
 /// assert_eq!(arg_list(" "), Err(Err::Error((Error{input: " ", code: ErrorKind::AlphaNumeric}))));
 /// ```
 pub fn arg_list(input: &str) -> IResult<&str, Vec<&str>> {
-    separated_list1(tag(" "), not_ending)(input)
+    sep_space_list(tag(","), not_banned)(input)
 }
 
 /// A combinator that wraps an `inner` parser with a leading `start` tag and an ending `end`,
@@ -79,20 +78,127 @@ fn not_banned(input: &str) -> IResult<&str, &str> {
 
 fn not_banned_process(input: &str) -> IResult<&str, Arg> {
     let (res, arg) = not_banned(input)?;
-    match ExpressionVariable::try_from(arg) {
-        Ok(arg) => Ok((res, Arg::Arg(arg))),
-        Err(_) => Err(Err::Error(Error::new(input, ErrorKind::SeparatedList))),
+    Ok((res, Arg::Arg(arg)))
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Arg<'a> {
+    Arg(&'a str),
+    Collection(Vec<&'a str>),
+    NamedCollection(&'a str, Vec<&'a str>),
+}
+
+impl<'a> From<Vec<Arg<'a>>> for FlatArgs<'a> {
+    fn from(args: Vec<Arg<'a>>) -> Self {
+        let mut solo = vec![];
+        let mut group = vec![];
+        let mut longest = 0;
+
+        for arg in args.iter() {
+            match arg {
+                Arg::Arg(a) => solo.push(*a),
+                Arg::Collection(a) => {
+                    if group.len() > longest {
+                        longest = group.len()
+                    };
+                    group.push(a)
+                }
+                Arg::NamedCollection(_, _) => todo!(),
+            }
+        }
+
+        let folded = group.into_iter().fold(vec![solo], |acc, x| {
+            let mut new_acc = vec![];
+            for s in x {
+                for a in &acc {
+                    let mut v = a.clone();
+                    v.push(s);
+                    new_acc.push(v);
+                }
+            }
+            new_acc
+        });
+        FlatArgs(folded)
+
+        /*
+        let mut from = vec![];
+        for g in group {
+            for s in g {
+                let mut group = solo.clone();
+                group.push(s);
+                from.push(group);
+            }
+        }
+        if from.len() == 0 {
+            from.push(solo)
+        }
+        FlatArgs(from)
+        */
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Arg {
-    Arg(ExpressionVariable),
-    Collection(Vec<ExpressionVariable>),
-    NamedCollection(String, Vec<ExpressionVariable>),
+pub struct Args<'a>(pub Vec<Arg<'a>>);
+
+impl<'a> Deref for Args<'a> {
+    type Target = Vec<Arg<'a>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+pub struct FlatArgs<'a>(pub Vec<Vec<&'a str>>);
+
+impl<'a> Deref for FlatArgs<'a> {
+    type Target = Vec<Vec<&'a str>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl TryFrom<FlatArgs<'_>> for Vec<Expression> {
+    type Error = anyhow::Error;
+
+    fn try_from(value: FlatArgs<'_>) -> Result<Vec<Expression>> {
+        value
+            .clone()
+            .into_iter()
+            .map(|args| {
+                let mut expr = Expression::new();
+                for arg in args {
+                    expr += ExpressionVariable::try_from(arg)?;
+                }
+                Ok(expr)
+            })
+            .collect::<Result<Vec<Expression>>>()
+    }
+}
+
+impl TryFrom<Vec<&str>> for ArgExpression {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Vec<&str>) -> Result<Self, Self::Error> {
+        let vars = value
+            .into_iter()
+            .map(|v| ExpressionVariable::try_from(v))
+            .collect::<Result<Vec<ExpressionVariable>>>()?;
+        Ok(ArgExpression(vars))
+    }
+}
+
+pub struct ArgExpression(pub Vec<ExpressionVariable>);
+
+impl Deref for ArgExpression {
+    type Target = Vec<ExpressionVariable>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 fn arg_process(input: &str) -> IResult<&str, Arg> {
+    // Returns Arg::Collection, Arg::NamedCollection, Arg::Arg
     alt((bracket_args_process, named_args_process, not_banned_process))(input)
 }
 
@@ -130,15 +236,7 @@ pub fn bracket_args(input: &str) -> IResult<&str, Vec<&str>> {
 
 fn bracket_args_process(input: &str) -> IResult<&str, Arg> {
     let (res, args) = bracket_args(input)?;
-    let args = args
-        .into_iter()
-        .map(|arg| ExpressionVariable::try_from(arg))
-        .collect::<Result<Vec<ExpressionVariable>>>();
-
-    match args {
-        Ok(args) => Ok((res, Arg::Collection(args))),
-        Err(_) => Err(Err::Failure(Error::new(input, ErrorKind::SeparatedList))),
-    }
+    Ok((res, Arg::Collection(args)))
 }
 
 /// Matches a list of space separated arguments with [arg_list] surrounded by a \{\{ and \}\}.
@@ -151,7 +249,7 @@ fn bracket_args_process(input: &str) -> IResult<&str, Arg> {
 /// assert_eq!(curly_args("{{ Daily Monthly }}"), Ok(("", vec![Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Daily)), Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Monthly))] )));
 /// ```
 pub fn curly_args(input: &str) -> IResult<&str, Vec<Arg>> {
-    delimited_args("{{", space_list, "}}")(input)
+    delimited_args("{{", complex_arg_list, "}}")(input)
 }
 
 /// Matches a list of space separated arguments with [arg_list] surrounded by a \{\{# and \}\}
@@ -168,21 +266,16 @@ pub fn named_args(input: &str) -> IResult<&str, (&str, Vec<&str>)> {
     )(input)
 }
 
-fn arg_and_named_args(input: &str) -> IResult<&str, (&str, Vec<(&str, Vec<&str>)>)> {
-    pair(terminated(alphanumeric1, multispace1), many1(named_args))(input)
+fn arg_and_named_args(input: &str) -> IResult<&str, (&str, Vec<Arg>)> {
+    pair(
+        terminated(alphanumeric1, tuple((multispace0, tag(","), multispace0))),
+        complex_arg_list,
+    )(input)
 }
 
 fn named_args_process(input: &str) -> IResult<&str, Arg> {
     let (res, (name, args)) = named_args(input)?;
-    let args = args
-        .into_iter()
-        .map(|arg| ExpressionVariable::try_from(arg))
-        .collect::<Result<Vec<ExpressionVariable>>>();
-
-    match args {
-        Ok(args) => Ok((res, Arg::NamedCollection(name.to_string(), args))),
-        Err(_) => Err(Err::Failure(Error::new(input, ErrorKind::SeparatedList))),
-    }
+    Ok((res, Arg::NamedCollection(name, args)))
 }
 
 /// Matches a named expression with the form {{* arg arg=[one two three] arg=[four five six] }}
@@ -195,21 +288,19 @@ fn named_args_process(input: &str) -> IResult<&str, Arg> {
 ///     Ok(("", ("arg", vec![("arg", vec!["one", "two", "three"]), ("arg", vec!["four", "five", "six"])])))
 /// );
 /// ```
-pub fn named_expression(input: &str) -> IResult<&str, (&str, Vec<(&str, Vec<&str>)>)> {
+pub fn named_expression(input: &str) -> IResult<&str, (&str, Vec<Arg>)> {
     delimited_args("{{*", arg_and_named_args, "}}")(input)
 }
 
 /// Matches a block with the form {{# arg arg }}anything{{/#}}
-pub fn block_args(input: &str) -> IResult<&str, (Vec<Arg>, Vec<Segment>, &str)> {
-    terminated(
-        tuple((
-            // Passing on the consumed length is so that children of a block can adjust their positioning by the size of the opening clause
-            curly_block_args,
-            expression,
-            take_until("{{/#}}"),
-        )),
-        tag("{{/#}}"),
-    )(input)
+pub fn block_args(input: &str) -> IResult<&str, Clause> {
+    let (res, (args, inner)) =
+        terminated(pair(curly_block_args, take_until("{{/#}}")), tag("{{/#}}"))(input)?;
+    let (inner_res, mut clauses) = expression(inner)?;
+    if inner_res.len() > 0 {
+        clauses.push(Clause::Text(inner_res));
+    }
+    Ok((res, Clause::Block(args, clauses)))
 }
 
 /*/// Returns a matched collection of statements by:
@@ -239,71 +330,93 @@ pub fn expression(input: &str) -> IResult<&str, Vec<LocatedStatement>> {
     )(input)
 }*/
 
-fn skip_text(input: &str) -> IResult<&str, Segment> {
-    let (rest, text) = take_until1("{{")(input)?;
-    Ok((rest, Segment::Text(Text(text.to_string()))))
+fn skip_text(input: &str) -> IResult<&str, Clause> {
+    let (res, text) = take_until1("{{")(input)?;
+    Ok((res, Clause::Text(text)))
 }
 
-fn find_segments(input: &str) -> IResult<&str, Segment> {
-    alt((
-        block_expression_tree,
-        named_expression_tree,
-        expression_tree,
-        skip_text,
-    ))(input)
+fn find_clauses(input: &str) -> IResult<&str, Clause> {
+    alt((block_args, function_tree, expression_tree, skip_text))(input)
 }
 
-pub fn expression(input: &str) -> IResult<&str, Vec<Segment>> {
-    many0(find_segments)(input)
+pub fn expression(input: &str) -> IResult<&str, Vec<Clause>> {
+    many0(find_clauses)(input)
 }
 
-pub fn expression_tree(input: &str) -> IResult<&str, Segment> {
-    map_res::<_, _, _, _, anyhow::Error, _, _>(curly_args, |exp| {
-        let vars = exp
-            .into_iter()
-            .map(|var| match var {
-                Arg::Arg(arg) => Ok(arg),
-                arg => Err(anyhow!("{:?} is not valid inside an expression", arg)),
-            })
-            .collect::<Result<Vec<ExpressionVariable>>>()?;
-        Ok(Segment::Expression(Expression::from(vars)))
-    })(input)
+pub fn expression_tree(input: &str) -> IResult<&str, Clause> {
+    let (res, args) = curly_args(input)?;
+
+    Ok((res, Clause::Expression(args)))
 }
 
-pub fn named_expression_tree(input: &str) -> IResult<&str, Segment> {
-    map_res::<_, _, _, _, anyhow::Error, _, _>(named_expression, |(var, exp)| {
-        let m = exp
-            .into_iter()
-            .map(|(key, val)| {
-                Ok((
-                    key.to_string(),
-                    val.into_iter()
-                        .map(|v| Ok(ExpressionVariable::try_from(v)?))
-                        .collect::<Result<Vec<_>>>()?,
-                ))
-            })
-            .collect::<Result<HashMap<_, _>>>()?;
-        Ok(Segment::ExpressionNamedCollection(
-            ExpressionNamedCollection::new(var.to_string(), m, Expression::new()),
-        ))
-    })(input)
+pub fn function_tree(input: &str) -> IResult<&str, Clause> {
+    let (res, (name, function)) = named_expression(input)?;
+
+    Ok((res, Clause::Function(name, function)))
 }
 
-pub fn block_expression_tree(input: &str) -> IResult<&str, Segment> {
-    map_res::<_, _, _, _, anyhow::Error, _, _>(block_args, |(args, mut nodes, filler)| {
-        nodes.push(Segment::Text(Text(filler.to_string())));
-        let mut expr_args: Vec<ExpressionVariable> = vec![];
-        let mut group_args: Vec<Vec<ExpressionVariable>> = vec![];
-        for arg in args {
-            match arg {
-                Arg::Arg(arg) => expr_args.push(arg),
-                Arg::Collection(args) => group_args.push(args),
-                _ => (),
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Clause<'a> {
+    Expression(Vec<Arg<'a>>),
+    Function(&'a str, Vec<Arg<'a>>),
+    Block(Vec<Arg<'a>>, Vec<Clause<'a>>),
+    Text(&'a str),
+}
+
+impl Clause<'_> {
+    fn to_child(&self) -> Result<Box<dyn Component>> {
+        match self {
+            Clause::Expression(e) => {
+                let exprs = Vec::<Expression>::try_from(FlatArgs::from(e.clone()))?;
+                Ok(Box::new(exprs) as _)
+                /*Ok(exprs
+                .into_iter()
+                .map(|expr| Box::new(expr) as _)
+                .collect::<Vec<_>>())*/
             }
+            Clause::Function(name, args) => match *name {
+                "table" => {
+                    let mut named_collections = HashMap::new();
+                    let mut expr = Expression::new();
+                    for arg in args {
+                        match arg {
+                            Arg::Arg(a) => {
+                                expr += ExpressionVariable::try_from(*a)?;
+                            }
+                            Arg::Collection(_) => todo!(),
+                            Arg::NamedCollection(name, collection) => {
+                                let collection = collection
+                                    .into_iter()
+                                    .map(|s| ExpressionVariable::try_from(*s))
+                                    .collect::<Result<Vec<ExpressionVariable>>>()?;
+                                named_collections.insert(*name, collection);
+                            }
+                        }
+                    }
+                    let (rows, cols) =
+                        (named_collections.get("rows"), named_collections.get("cols"));
+                    let rows = rows.ok_or_else(|| anyhow!("Table requires rows"))?;
+                    let cols = cols.ok_or_else(|| anyhow!("Table requires cols"))?;
+
+                    Ok(Box::new(Table::new(rows.clone(), cols.clone(), expr)))
+                }
+                _ => return Err(anyhow!("Unrecognised function name")),
+            },
+            Clause::Block(expr, children) => {
+                let exprs = Vec::<Expression>::try_from(FlatArgs::from(expr.clone()))?;
+                let mut top_node = Node::new(Expression::new());
+                for expr in exprs {
+                    let mut node = Node::new(expr);
+                    for child in children {
+                        node.add_child(child.to_child()?);
+                    }
+                    top_node.add_child(Box::new(node));
+                }
+                Ok(Box::new(top_node))
+            }
+            Clause::Text(text) => Ok(Box::new(Text(text.to_string()))),
         }
-        let node = SegmentNode::new(Expression::from(expr_args), nodes, group_args);
-        Ok(Segment::Node(node))
-    })(input)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -323,7 +436,11 @@ pub struct SegmentNode {
 }
 
 impl SegmentNode {
-    fn new(value: Expression, children: Vec<Segment>, group: Vec<Vec<ExpressionVariable>>) -> Self {
+    pub fn new(
+        value: Expression,
+        children: Vec<Segment>,
+        group: Vec<Vec<ExpressionVariable>>,
+    ) -> Self {
         SegmentNode {
             value,
             children,
@@ -345,14 +462,8 @@ impl Deref for Segments {
 impl TryFrom<String> for Segments {
     type Error = anyhow::Error;
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        match expression(&value) {
-            Ok((filler, mut stmts)) => {
-                stmts.push(Segment::Text(Text(filler.to_string())));
-                Ok(Segments(stmts))
-            }
-            Err(e) => Err(e.map(|e| Error::new(e.input.to_string(), e.code)).into()),
-        }
+    fn try_from(_: String) -> Result<Self, Self::Error> {
+        unimplemented!()
     }
 }
 
@@ -421,255 +532,347 @@ pub fn parse_date(input: &str) -> Result<NaiveDate> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{pre_process::tree::Component, TimeFrequency};
-    use nom::Err;
 
     use super::*;
 
     #[test]
-    fn test_space_list() {
-        let (res, args) = space_list("Daily Quarterly").unwrap();
-        assert_eq!(res, "");
+    fn test_clause_translation() {
+        let (_, args) =
+            expression("{{#cat_purrs, Words, 2022-02-04, [Quarterly, Weekly]}}Fig: {{fig}} Change: {{change}} {{/#}}")
+                .unwrap();
+        let mut node = Node::new(Expression::new());
+        for arg in args {
+            node.add_child(arg.to_child().unwrap())
+        }
+        let res = node.render(&Expression::new()).unwrap();
         assert_eq!(
-            args,
-            vec![
-                Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Daily)),
-                Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly))
-            ]
-        )
+            res,
+            "Fig: 10 Change: up 233.3% Fig: 10 Change: up 25.0% ".to_string()
+        );
     }
 
     #[test]
     fn test_complex_arg_list() {
-        let (res, args) = complex_arg_list("Monthly, rows=[Daily Quarterly], [Yearly]").unwrap();
+        let (res, args) = complex_arg_list("one, two, three").unwrap();
+        assert_eq!(res, "");
+        assert_eq!(
+            args,
+            vec![Arg::Arg("one"), Arg::Arg("two"), Arg::Arg("three")]
+        );
+
+        let (res, args) = complex_arg_list("one, [two, three]").unwrap();
+        assert_eq!(res, "");
+        assert_eq!(
+            args,
+            vec![Arg::Arg("one"), Arg::Collection(vec!["two", "three"])]
+        );
+        let (res, args) = complex_arg_list("one, two=[three, four]").unwrap();
         assert_eq!(res, "");
         assert_eq!(
             args,
             vec![
-                Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Monthly)),
-                Arg::NamedCollection(
-                    "rows".to_string(),
-                    vec![
-                        ExpressionVariable::TimeFrequency(TimeFrequency::Daily),
-                        ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly)
-                    ]
-                ),
-                Arg::Collection(vec![ExpressionVariable::TimeFrequency(
-                    TimeFrequency::Yearly
-                )])
+                Arg::Arg("one"),
+                Arg::NamedCollection("two", vec!["three", "four"])
             ]
-        )
-    }
-
-    #[test]
-    fn test_skip_text() {
-        assert_eq!(
-            skip_text("blah blah blah {{foo"),
-            Ok(("{{foo", Segment::Text(Text("blah blah blah ".to_string()))))
-        );
-        assert_eq!(
-            skip_text("blah"),
-            Err(Err::Error(Error::new("blah", ErrorKind::TakeUntil)))
-        );
-    }
-
-    #[test]
-    fn test_named_expression() {
-        let (_, (command, named)) =
-            named_expression("{{* table rows=[Monthly Quarterly] cols=[cat_purrs dog_woofs]}}")
-                .unwrap();
-        assert_eq!(command, "table");
-        assert_eq!(named.len(), 2);
-        assert_eq!(named[0], ("rows", vec!["Monthly", "Quarterly"]));
-
-        let (_, mut s) =
-            named_expression_tree("{{* table rows=[Weekly Quarterly] cols=[cat_purrs]}}").unwrap();
-        if let Segment::ExpressionNamedCollection(s) = &mut s {
-            let mut expr = Expression::new();
-            expr.set_command("change".to_string());
-            expr.set_date(NaiveDate::from_ymd(2022, 2, 4));
-            assert_eq!(
-                s.render(&expr).unwrap(),
-                "
-| _ | cat_purrs |
-| --- | --- |
-| Weekly | 25.0% |
-| Quarterly | 233.3% |
-"
-                .to_string()
-            )
-        } else {
-            panic!("Not correct statement")
-        }
-
-        assert_eq!(
-            named_expression_tree("blah"),
-            Err(Err::Error(Error::new("blah", ErrorKind::Tag)))
         );
     }
 
     #[test]
     fn test_expression() {
-        let (leftover, _) = expression_tree("{{ Weekly cat_purrs change  }}").unwrap();
-        assert!(leftover.len() == 0);
-
-        assert_eq!(
-            expression_tree("blah"),
-            Err(Err::Error(Error::new("blah", ErrorKind::Tag)))
-        );
-    }
-
-    #[test]
-    fn test_block_expression() {
-        assert_eq!(
-            block_expression_tree("blah"),
-            Err(Err::Error(Error::new("blah", ErrorKind::Tag)))
-        );
-
-        let (res, seg) =
-            block_expression_tree("{{# [cat_purrs dog_woofs] }} {{fig}} {{/#}}").unwrap();
+        let (res, args) = expression_tree("{{one, two}}").unwrap();
         assert_eq!(res, "");
-        match &seg {
-            Segment::Node(n) => {
+        assert_eq!(
+            args,
+            Clause::Expression(vec![Arg::Arg("one"), Arg::Arg("two")])
+        );
+    }
+
+    #[test]
+    fn test_block() {
+        let (res, args) = curly_block_args("{{# one }}{{two}}{{/#}}").unwrap();
+        assert_eq!(res, "{{two}}{{/#}}");
+        assert_eq!(args, vec![Arg::Arg("one")]);
+
+        let (res, args) = block_args("{{# one }}{{two}}{{/#}}").unwrap();
+        assert_eq!(res, "");
+        assert_eq!(
+            args,
+            Clause::Block(
+                vec![Arg::Arg("one")],
+                vec![Clause::Expression(vec![Arg::Arg("two")])]
+            )
+        );
+    }
+
+    #[test]
+    fn test_function() {
+        let (res, args) = function_tree("{{*one, two}}").unwrap();
+        assert_eq!(res, "");
+        assert_eq!(args, Clause::Function("one", vec![Arg::Arg("two")]));
+    }
+
+    #[test]
+    fn test_expressions() {
+        let (res, clauses) = expression("{{# one }}{{two}}{{/#}}{{* three, four}} five").unwrap();
+        assert_eq!(res, " five");
+        assert_eq!(
+            clauses,
+            vec![
+                Clause::Block(
+                    vec![Arg::Arg("one")],
+                    vec![Clause::Expression(vec![Arg::Arg("two")])]
+                ),
+                Clause::Function("three", vec![Arg::Arg("four")])
+            ]
+        );
+    }
+
+    /*
+        #[test]
+        fn test_space_list() {
+            let (res, args) = space_list("Daily Quarterly").unwrap();
+            assert_eq!(res, "");
+            assert_eq!(
+                args,
+                vec![
+                    Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Daily)),
+                    Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly))
+                ]
+            )
+        }
+
+        #[test]
+        fn test_complex_arg_list() {
+            let (res, args) = complex_arg_list("Monthly, rows=[Daily Quarterly], [Yearly]").unwrap();
+            assert_eq!(res, "");
+            assert_eq!(
+                args,
+                vec![
+                    Arg::Arg(ExpressionVariable::TimeFrequency(TimeFrequency::Monthly)),
+                    Arg::NamedCollection(
+                        "rows".to_string(),
+                        vec![
+                            ExpressionVariable::TimeFrequency(TimeFrequency::Daily),
+                            ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly)
+                        ]
+                    ),
+                    Arg::Collection(vec![ExpressionVariable::TimeFrequency(
+                        TimeFrequency::Yearly
+                    )])
+                ]
+            )
+        }
+
+        #[test]
+        fn test_skip_text() {
+            assert_eq!(
+                skip_text("blah blah blah {{foo"),
+                Ok(("{{foo", Segment::Text(Text("blah blah blah ".to_string()))))
+            );
+            assert_eq!(
+                skip_text("blah"),
+                Err(Err::Error(Error::new("blah", ErrorKind::TakeUntil)))
+            );
+        }
+
+        #[test]
+        fn test_named_expression() {
+            let (_, (command, named)) =
+                named_expression("{{* table rows=[Monthly Quarterly] cols=[cat_purrs dog_woofs]}}")
+                    .unwrap();
+            assert_eq!(command, "table");
+            assert_eq!(named.len(), 2);
+            assert_eq!(named[0], ("rows", vec!["Monthly", "Quarterly"]));
+
+            let (_, mut s) =
+                function_tree("{{* table rows=[Weekly Quarterly] cols=[cat_purrs]}}").unwrap();
+            if let Segment::ExpressionNamedCollection(s) = &mut s {
+                let mut expr = Expression::new();
+                expr.set_command("change".to_string());
+                expr.set_date(NaiveDate::from_ymd(2022, 2, 4));
                 assert_eq!(
-                    n.group,
-                    vec![vec![
-                        ExpressionVariable::DataName("cat_purrs".to_string()),
-                        ExpressionVariable::DataName("dog_woofs".to_string())
-                    ]]
-                );
+                    s.render(&expr).unwrap(),
+                    "
+    | _ | cat_purrs |
+    | --- | --- |
+    | Weekly | 25.0% |
+    | Quarterly | 233.3% |
+    "
+                    .to_string()
+                )
+            } else {
+                panic!("Not correct statement")
             }
-            _ => panic!("Wrong type of Segment"),
+
+            assert_eq!(
+                function_tree("blah"),
+                Err(Err::Error(Error::new("blah", ErrorKind::Tag)))
+            );
         }
 
-        let mut node = Node::from(vec![seg]);
+        #[test]
+        fn test_expression() {
+            let (leftover, _) = expression_tree("{{ Weekly cat_purrs change  }}").unwrap();
+            assert!(leftover.len() == 0);
 
-        let mut exp = Expression::new();
-        exp.set_command("fig".to_string());
-        exp.set_date(NaiveDate::from_ymd(2022, 2, 4));
-        exp.set_frequency(TimeFrequency::Weekly);
-
-        let both = node.render(&exp).unwrap();
-
-        assert_eq!(both, " 10  25 ".to_string());
-    }
-
-    #[test]
-    fn test_find_segments() {
-        assert_eq!(
-            find_segments(""),
-            Err(Err::Error(Error::new("", ErrorKind::TakeUntil)))
-        );
-    }
-
-    fn rendered(s: &str) -> Result<String> {
-        let mut node = Node::from(Segments::try_from(s.to_string())?.0);
-        node.render(&Expression::new())
-    }
-
-    #[test]
-    fn test_statements() {
-        assert_eq!(
-            rendered("{{ Weekly cat_purrs change 2022-02-04}}").unwrap(),
-            "25.0%".to_string()
-        );
-
-        assert_eq!(
-            rendered("{{# cat_purrs, 2022-02-04}}{{ Weekly change}}{{/#}}").unwrap(),
-            "25.0%".to_string()
-        );
-        assert_eq!(
-            rendered(
-                "junk {{# cat_purrs, 2022-02-04, Words}} more junk {{ Weekly change }} next junk {{/#}} final junk"
-            )
-            .unwrap(),
-            "junk  more junk up 25.0% next junk  final junk".to_string()
-        );
-        assert_eq!(
-            rendered(
-                "{{# cat_purrs, 2022-02-04 }}{{*table rows=[Weekly Quarterly] cols=[change avg_freq]}}{{/#}}"
-            )
-            .unwrap(),
-            "
-| _ | change | avg_freq |
-| --- | --- | --- |
-| Weekly | 25.0% | 10.0 |
-| Quarterly | 233.3% | 130.0 |
-"
-            .to_string()
-        );
-        /*
-        let (leftover, nodes) = expression_new(
-            "junk {{# cat_purrs }} more junk {{ Weekly change }}{{ Quarterly change }} so much junk {{/#}}",
-        ).unwrap();
-        let top = Rc::new(Node::new(Component::Filler("")));
-        for node in nodes {
-            Node::add_child(&top, &node)
+            assert_eq!(
+                expression_tree("blah"),
+                Err(Err::Error(Error::new("blah", ErrorKind::Tag)))
+            );
         }
-        Node::add_child(&top, &Rc::new(Node::new(Component::Filler(leftover))));
-        let content = top.render().unwrap();
-        eprintln!("{content}");
-        assert!(leftover.len() == 0);
 
-        assert_eq!(
-            stmts,
-            Statements(vec![LocatedStatement(
-                5..97,
-                Statement::Block(
-                    vec!["one", "two", "three"],
-                    Statements(vec![
-                        LocatedStatement(
-                            36..55,
-                            Statement::Expression(vec!["four", "five", "six"])
-                        ),
-                        LocatedStatement(
-                            55..77,
-                            Statement::Expression(vec!["seven", "eight", "nine"])
-                        )
+        #[test]
+        fn test_block_expression() {
+            assert_eq!(
+                block_expression_tree("blah"),
+                Err(Err::Error(Error::new("blah", ErrorKind::Tag)))
+            );
+
+            let (res, seg) =
+                block_expression_tree("{{# [cat_purrs dog_woofs] }} {{fig}} {{/#}}").unwrap();
+            assert_eq!(res, "");
+            match &seg {
+                Segment::Node(n) => {
+                    assert_eq!(
+                        n.group,
+                        vec![vec![
+                            ExpressionVariable::DataName("cat_purrs".to_string()),
+                            ExpressionVariable::DataName("dog_woofs".to_string())
+                        ]]
+                    );
+                }
+                _ => panic!("Wrong type of Segment"),
+            }
+
+            let mut node = Node::from(vec![seg]);
+
+            let mut exp = Expression::new();
+            exp.set_command("fig".to_string());
+            exp.set_date(NaiveDate::from_ymd(2022, 2, 4));
+            exp.set_frequency(TimeFrequency::Weekly);
+
+            let both = node.render(&exp).unwrap();
+
+            assert_eq!(both, " 10  25 ".to_string());
+        }
+
+        #[test]
+        fn test_find_segments() {
+            assert_eq!(
+                find_clauses(""),
+                Err(Err::Error(Error::new("", ErrorKind::TakeUntil)))
+            );
+        }
+
+        fn rendered(s: &str) -> Result<String> {
+            let mut node = Node::from(Segments::try_from(s.to_string())?.0);
+            node.render(&Expression::new())
+        }
+
+        #[test]
+        fn test_statements() {
+            assert_eq!(
+                rendered("{{ Weekly cat_purrs change 2022-02-04}}").unwrap(),
+                "25.0%".to_string()
+            );
+
+            assert_eq!(
+                rendered("{{# cat_purrs, 2022-02-04}}{{ Weekly change}}{{/#}}").unwrap(),
+                "25.0%".to_string()
+            );
+            assert_eq!(
+                rendered(
+                    "junk {{# cat_purrs, 2022-02-04, Words}} more junk {{ Weekly change }} next junk {{/#}} final junk"
+                )
+                .unwrap(),
+                "junk  more junk up 25.0% next junk  final junk".to_string()
+            );
+            assert_eq!(
+                rendered(
+                    "{{# cat_purrs, 2022-02-04 }}{{*table rows=[Weekly Quarterly] cols=[change avg_freq]}}{{/#}}"
+                )
+                .unwrap(),
+                "
+    | _ | change | avg_freq |
+    | --- | --- | --- |
+    | Weekly | 25.0% | 10.0 |
+    | Quarterly | 233.3% | 130.0 |
+    "
+                .to_string()
+            );
+            */
+    /*
+    let (leftover, nodes) = expression_new(
+        "junk {{# cat_purrs }} more junk {{ Weekly change }}{{ Quarterly change }} so much junk {{/#}}",
+    ).unwrap();
+    let top = Rc::new(Node::new(Component::Filler("")));
+    for node in nodes {
+        Node::add_child(&top, &node)
+    }
+    Node::add_child(&top, &Rc::new(Node::new(Component::Filler(leftover))));
+    let content = top.render().unwrap();
+    eprintln!("{content}");
+    assert!(leftover.len() == 0);
+
+    assert_eq!(
+        stmts,
+        Statements(vec![LocatedStatement(
+            5..97,
+            Statement::Block(
+                vec!["one", "two", "three"],
+                Statements(vec![
+                    LocatedStatement(
+                        36..55,
+                        Statement::Expression(vec!["four", "five", "six"])
+                    ),
+                    LocatedStatement(
+                        55..77,
+                        Statement::Expression(vec!["seven", "eight", "nine"])
+                    )
+                ])
+            )
+        )])
+    );
+
+    assert_eq!(
+        Statements::try_from("{{# one two three }}{{/#}}").unwrap(),
+        Statements(vec![LocatedStatement(
+            0..26,
+            Statement::Block(vec!["one", "two", "three"], Statements(vec![]))
+        )])
+    );
+
+    assert_eq!(
+        Statements::try_from("{{* table rows=[one two three] cols=[four five six] }}").unwrap(),
+        Statements(vec![LocatedStatement(
+            0..54,
+            Statement::ExpressionNamedCollection(
+                "table",
+                vec![
+                    ("rows", vec!["one", "two", "three"]),
+                    ("cols", vec!["four", "five", "six"])
+                ]
+            )
+        )])
+    );
+
+    assert_eq!(
+        Statements::try_from("{{# one two three }}{{* table rows=[four five six] cols=[seven eight nine] }}{{# ten eleven twelve }}{{ thirteen fourteen fifteen }}{{/#}}{{/#}}").unwrap(),
+        Statements(vec![LocatedStatement(0..144, Statement::Block(
+                vec!["one", "two", "three"],
+                Statements(vec![LocatedStatement(20..77, Statement::ExpressionNamedCollection(
+                            "table",
+                            vec![
+                                ("rows", vec!["four", "five", "six"]),
+                                ("cols", vec!["seven", "eight", "nine"])
+                                ]
+                            )),
+                    LocatedStatement(77..138, Statement::Block(vec!["ten", "eleven", "twelve"], Statements(vec![
+                    LocatedStatement(101..132, Statement::Expression(vec!["thirteen", "fourteen", "fifteen"]))])))
                     ])
-                )
-            )])
-        );
-
-        assert_eq!(
-            Statements::try_from("{{# one two three }}{{/#}}").unwrap(),
-            Statements(vec![LocatedStatement(
-                0..26,
-                Statement::Block(vec!["one", "two", "three"], Statements(vec![]))
-            )])
-        );
-
-        assert_eq!(
-            Statements::try_from("{{* table rows=[one two three] cols=[four five six] }}").unwrap(),
-            Statements(vec![LocatedStatement(
-                0..54,
-                Statement::ExpressionNamedCollection(
-                    "table",
-                    vec![
-                        ("rows", vec!["one", "two", "three"]),
-                        ("cols", vec!["four", "five", "six"])
-                    ]
-                )
-            )])
-        );
-
-        assert_eq!(
-            Statements::try_from("{{# one two three }}{{* table rows=[four five six] cols=[seven eight nine] }}{{# ten eleven twelve }}{{ thirteen fourteen fifteen }}{{/#}}{{/#}}").unwrap(),
-            Statements(vec![LocatedStatement(0..144, Statement::Block(
-                    vec!["one", "two", "three"],
-                    Statements(vec![LocatedStatement(20..77, Statement::ExpressionNamedCollection(
-                                "table",
-                                vec![
-                                    ("rows", vec!["four", "five", "six"]),
-                                    ("cols", vec!["seven", "eight", "nine"])
-                                    ]
-                                )),
-                        LocatedStatement(77..138, Statement::Block(vec!["ten", "eleven", "twelve"], Statements(vec![
-                        LocatedStatement(101..132, Statement::Expression(vec!["thirteen", "fourteen", "fifteen"]))])))
-                        ])
-                )
-            )])
-        );
-        */
-    }
+            )
+        )])
+    );
+    */
+    //}
 }

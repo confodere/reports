@@ -15,6 +15,16 @@ impl Component for Text {
     }
 }
 
+impl<T: Component> Component for Vec<T> {
+    fn render(&mut self, ctx: &Expression) -> Result<String> {
+        let mut s = String::new();
+        for c in self {
+            s.push_str(c.render(ctx)?.as_str())
+        }
+        Ok(s)
+    }
+}
+
 pub struct Node {
     pub value: Expression,
     children: Vec<Box<dyn Component>>,
@@ -82,7 +92,7 @@ mod tests {
     fn create_node_public() {
         let date = NaiveDate::from_ymd(2022, 2, 4);
         let mut vars = Vec::new();
-        for var in ["Weekly", "cat_purrs", "change"] {
+        for var in ["Weekly", "cat_purrs", "change", "Numbers"] {
             vars.push(ExpressionVariable::try_from(var).unwrap());
         }
         let vars_2 = vec![ExpressionVariable::Command("avg_freq".to_string())];

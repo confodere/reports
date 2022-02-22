@@ -85,10 +85,7 @@ impl TryFrom<CommandFreq> for Change {
             new: vals[0],
             span: value.data.span,
             frequency: value.frequency,
-            display_type: match value.display_type {
-                Some(v) => v,
-                None => RenderContext::Numbers,
-            },
+            display_type: value.display_type,
         })
     }
 }
@@ -167,10 +164,7 @@ impl TryFrom<CommandFreq> for AvgFreq {
             fig: point.fig(),
             span: value.data.span,
             frequency: value.frequency,
-            display_type: match value.display_type {
-                Some(v) => v,
-                None => RenderContext::Numbers,
-            },
+            display_type: value.display_type,
         })
     }
 }
@@ -225,14 +219,8 @@ pub struct Fig {
 }
 
 impl Fig {
-    pub fn new(fig: f64, display_type: Option<RenderContext>) -> Self {
-        Fig {
-            fig,
-            display_type: match display_type {
-                Some(display_type) => display_type,
-                None => RenderContext::Numbers,
-            },
-        }
+    pub fn new(fig: f64, display_type: RenderContext) -> Self {
+        Fig { fig, display_type }
     }
 }
 
