@@ -1,16 +1,11 @@
+use super::arg::Arg;
+use super::tree::Component;
+use crate::functions::{AvgFreq, Change, Fig};
+use crate::{Data, RenderContext, TimeFrequency};
 use anyhow::{anyhow, Error, Result};
 use chrono::NaiveDate;
 use lazy_static::lazy_static;
 use std::collections::{HashMap, HashSet};
-use std::fmt::Display;
-use std::ops::{Add, AddAssign};
-
-use crate::functions::table::Table;
-use crate::functions::{AvgFreq, Change, Fig};
-use crate::parser;
-use crate::{Data, RenderContext, TimeFrequency};
-
-use super::tree::Component;
 
 lazy_static! {
     pub static ref COMMANDS: HashMap<&'static str, &'static str> = {
@@ -29,6 +24,7 @@ lazy_static! {
         .into_iter()
         .collect()
     };
+    pub static ref FUNCTIONS: HashSet<&'static str> = ["table"].iter().cloned().collect();
     static ref FREQUENCIES: HashSet<&'static str> = {
         ["Daily", "Weekly", "Monthly", "Quarterly", "Yearly"]
             .iter()
@@ -101,82 +97,6 @@ impl TryFrom<Command> for String {
     }
 }
 
-/// Provides variables that can be added to [Expression]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExpressionVariable {
-    Command(String),
-    TimeFrequency(TimeFrequency),
-    DataName(String),
-    Date(NaiveDate),
-    RenderContext(RenderContext),
-}
-
-impl TryFrom<&str> for ExpressionVariable {
-    type Error = Error;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        if COMMANDS.keys().any(|name| name == &value) {
-            Ok(ExpressionVariable::Command(value.to_string()))
-        } else if let Ok(frequency) = value.parse::<TimeFrequency>() {
-            Ok(ExpressionVariable::TimeFrequency(frequency))
-        } else if let Ok(render_context) = value.parse::<RenderContext>() {
-            Ok(ExpressionVariable::RenderContext(render_context))
-        } else if DATA_NAMES.keys().any(|name| name == &value.to_string()) {
-            Ok(ExpressionVariable::DataName(value.to_string()))
-        } else if let Ok(date) = parser::parse_date(value) {
-            Ok(ExpressionVariable::Date(date))
-        } else {
-            return Err(anyhow!("Unknown key word: {}", value));
-        }
-    }
-}
-
-impl AddAssign<ExpressionVariable> for Expression {
-    fn add_assign(&mut self, rhs: ExpressionVariable) {
-        match rhs {
-            ExpressionVariable::Command(command) => self.set_command(command),
-            ExpressionVariable::TimeFrequency(frequency) => self.set_frequency(frequency),
-            ExpressionVariable::DataName(data_name) => self.set_data_name(data_name),
-            ExpressionVariable::RenderContext(display_type) => self.set_display_type(display_type),
-            ExpressionVariable::Date(date) => self.set_date(date),
-        }
-    }
-}
-
-impl Add<ExpressionVariable> for Expression {
-    type Output = Self;
-
-    fn add(self, rhs: ExpressionVariable) -> Self::Output {
-        let mut expr = self;
-        expr += rhs;
-        expr
-    }
-}
-
-impl Display for ExpressionVariable {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            ExpressionVariable::Command(command) => {
-                if let Some(name) = COMMANDS.get(command.as_str()) {
-                    name.fmt(f)
-                } else {
-                    panic!("Unknown command {command}")
-                }
-            }
-            ExpressionVariable::TimeFrequency(frequency) => frequency.fmt(f),
-            ExpressionVariable::DataName(data_name) => {
-                if let Some(name) = DATA_NAMES.get(data_name) {
-                    name.fmt(f)
-                } else {
-                    panic!("Data name missing for {data_name}")
-                }
-            }
-            ExpressionVariable::RenderContext(display_type) => display_type.fmt(f),
-            ExpressionVariable::Date(date) => date.format("%Y-%m-%d").fmt(f),
-        }
-    }
-}
-
 /// The entire context for an expression.  
 /// Contains a collection of command names, and optional values of [TimeFrequency], [Data], and [DisplayType].  
 ///
@@ -232,23 +152,36 @@ impl Expression {
         self.date = self.date.take().or(other.date);
         self.display_type = self.display_type.take().or(other.display_type);
     }
-}
 
-impl Component for Expression {
-    fn render(&mut self, ctx: &Expression) -> Result<String> {
-        self.fill_blank(ctx.clone());
-
-        String::try_from(Command::try_from(&*self)?)
+    pub fn fill_arg(&mut self, arg: Arg) {
+        match arg {
+            Arg::Command(s) => self.command = self.command.take().or(Some(s.to_string())),
+            Arg::TimeFrequency(frequency) => {
+                self.frequency = self.frequency.take().or(Some(frequency))
+            }
+            Arg::DataName(s) => self.data_name = self.data_name.take().or(Some(s.to_string())),
+            Arg::Date(date) => self.date = self.date.take().or(Some(date)),
+            Arg::RenderContext(rc) => self.display_type = self.display_type.take().or(Some(rc)),
+            _ => panic!("{arg:?} cannot be filled into an Expression"),
+        }
     }
 }
 
-impl From<Vec<ExpressionVariable>> for Expression {
-    fn from(vars: Vec<ExpressionVariable>) -> Self {
-        let mut expr = Expression::new();
-        for var in vars {
-            expr += var;
-        }
-        expr
+impl Component for Expression {
+    fn render(&self, ctx: &Expression) -> Result<String> {
+        let mut expr = self.clone();
+        expr.fill_blank(ctx.to_owned());
+
+        String::try_from(Command::try_from(&expr)?)
+    }
+}
+
+impl From<Vec<Arg>> for Expression {
+    fn from(args: Vec<Arg>) -> Self {
+        args.into_iter().fold(Expression::new(), |mut expr, arg| {
+            expr.fill_arg(arg);
+            expr
+        })
     }
 }
 
@@ -316,91 +249,5 @@ impl TryFrom<&Expression> for Data {
         let data = Data::read(&data_name, &date)?;
 
         Ok(data)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExpressionNamedCollection {
-    command: String,
-    collections: HashMap<String, Vec<ExpressionVariable>>,
-    ctx: Expression,
-}
-
-impl ExpressionNamedCollection {
-    pub fn new(
-        command: String,
-        collections: HashMap<String, Vec<ExpressionVariable>>,
-        ctx: Expression,
-    ) -> Self {
-        ExpressionNamedCollection {
-            command,
-            collections,
-            ctx,
-        }
-    }
-    /// Set the expression's commmand name
-    pub fn set_command(&mut self, command: String) {
-        self.command = command
-    }
-
-    pub fn set_ctx(&mut self, ctx: Expression) {
-        self.ctx = ctx;
-    }
-}
-
-impl Component for ExpressionNamedCollection {
-    fn render(&mut self, ctx: &Expression) -> Result<String> {
-        self.set_ctx(ctx.clone());
-        String::try_from(Table::try_from(&*self)?)
-    }
-}
-
-impl<'a> TryFrom<&'a ExpressionNamedCollection> for Table {
-    type Error = Error;
-
-    fn try_from(value: &'a ExpressionNamedCollection) -> Result<Self, Self::Error> {
-        if let Some(rows) = value.collections.get("rows") {
-            if let Some(cols) = value.collections.get("cols") {
-                Ok(Table::new(rows.to_vec(), cols.clone(), value.ctx.clone()))
-            } else {
-                Err(anyhow!("Table missing cols"))
-            }
-        } else {
-            Err(anyhow!("Table missing rows"))
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::NaiveDate;
-
-    #[test]
-    fn test_expression() {
-        let mut expr = Expression::new();
-
-        expr.set_frequency(TimeFrequency::Weekly);
-        expr.set_data_name("cat_purrs".to_string());
-        expr.set_date(NaiveDate::from_ymd(2022, 2, 4));
-        expr.set_command("change".to_string());
-        expr.set_display_type(RenderContext::Numbers);
-
-        let result = String::try_from(Command::try_from(&expr).unwrap()).unwrap();
-
-        assert_eq!(result, "25.0%".to_string());
-    }
-
-    #[test]
-    fn test_expression_variable() {
-        let mut expr = Expression::new();
-        let date = NaiveDate::from_ymd(2022, 2, 4);
-        expr.set_date(date);
-        for var in ["Weekly", "change", "cat_purrs", "Words"] {
-            expr += ExpressionVariable::try_from(var).unwrap()
-        }
-        let result = String::try_from(Command::try_from(&expr).unwrap()).unwrap();
-
-        assert_eq!(result, "up 25.0%".to_string());
     }
 }

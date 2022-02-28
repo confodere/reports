@@ -1,53 +1,53 @@
+use crate::pre_process::arg::Arg;
 use crate::pre_process::{
-    block::{Command, Expression, ExpressionVariable},
+    block::{Command, Expression},
     tree::Component,
 };
-use anyhow::{Error, Result};
+use anyhow::Result;
 
 /// Table is two dimensional structure that adds one [ExpressionVariable] from each dimension
 /// into an [Expression] to complete it.  
 ///
 /// A row or column adds the *same* [ExpressionVariable] to the entire row/column,
 /// so that a cross-section of two variables is generated.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Table {
-    rows: Vec<ExpressionVariable>,
-    cols: Vec<ExpressionVariable>,
+    rows: Vec<Arg>,
+    cols: Vec<Arg>,
     ctx: Expression,
 }
 
 impl Table {
-    pub fn new(
-        rows: Vec<ExpressionVariable>,
-        cols: Vec<ExpressionVariable>,
-        ctx: Expression,
-    ) -> Self {
+    pub fn new(rows: Vec<Arg>, cols: Vec<Arg>, ctx: Expression) -> Self {
         Self { rows, cols, ctx }
     }
 }
 
-impl TryFrom<Table> for String {
-    type Error = Error;
+impl Component for Table {
+    fn render(&self, ctx: &Expression) -> Result<String> {
+        let mut expr = self.ctx.clone();
+        expr.fill_blank(ctx.to_owned());
 
-    fn try_from(value: Table) -> Result<Self, Self::Error> {
         let mut table = String::from("\n| _ |");
         // Column Headers
-        for col in &value.cols {
+        for col in &self.cols {
             table.push_str(&format!(" {} |", &col.to_string()));
         }
         table.push_str("\n|");
         // Header Separator
-        for _ in 0..&value.cols.len() + 1 {
+        for _ in 0..&self.cols.len() + 1 {
             table.push_str(" --- |");
         }
         // Rows
-        for row in &value.rows {
-            let ctx = value.ctx.clone() + row.clone();
+        for row in &self.rows {
+            let mut ctx = expr.clone();
+            ctx.fill_arg(row.to_owned());
             // Row Heading
             table.push_str(&format!("\n| {} |", row.to_string()));
             // Row Cells
-            for col in &value.cols {
-                let ctx = ctx.clone() + col.clone();
+            for col in &self.cols {
+                let mut ctx = ctx.clone();
+                ctx.fill_arg(col.to_owned());
                 table.push_str(&format!(
                     " {} |",
                     &String::try_from(Command::try_from(&ctx)?)?
@@ -56,13 +56,6 @@ impl TryFrom<Table> for String {
         }
         table.push_str("\n");
         Ok(table)
-    }
-}
-
-impl Component for Table {
-    fn render(&mut self, ctx: &Expression) -> Result<String> {
-        self.ctx.fill_blank(ctx.clone());
-        String::try_from(self.clone())
     }
 }
 
@@ -81,15 +74,12 @@ mod tests {
         ctx.set_date(date);
         ctx.set_display_type(RenderContext::Numbers);
         let cols = vec![
-            ExpressionVariable::TimeFrequency(TimeFrequency::Weekly),
-            ExpressionVariable::TimeFrequency(TimeFrequency::Quarterly),
+            Arg::TimeFrequency(TimeFrequency::Weekly),
+            Arg::TimeFrequency(TimeFrequency::Quarterly),
         ];
-        let rows = vec![
-            ExpressionVariable::Command("change".to_string()),
-            ExpressionVariable::Command("avg_freq".to_string()),
-        ];
+        let rows = vec![Arg::Command("change"), Arg::Command("avg_freq")];
         let tbl = Table::new(rows, cols, ctx);
-        let tbl = String::try_from(tbl).unwrap();
+        let tbl = tbl.render(&Expression::new()).unwrap();
 
         assert_eq!(
             tbl,

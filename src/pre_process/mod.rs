@@ -1,5 +1,5 @@
-use crate::parser::Segments;
-use crate::pre_process::block::{Expression, ExpressionVariable};
+use crate::parser::{self};
+use crate::pre_process::block::Expression;
 use crate::pre_process::tree::{Component, Node};
 use anyhow::Result;
 use chrono::{Local, NaiveDate};
@@ -7,7 +7,11 @@ use mdbook::book::{BookItem, Chapter};
 use mdbook::preprocess::Preprocessor;
 use toml::{map::Map, value::Value};
 
+use self::arg::Clause;
+
+pub mod arg;
 pub mod block;
+pub mod flatten;
 pub mod tree;
 
 pub struct Processor;
@@ -58,8 +62,23 @@ impl Preprocessor for Processor {
 }
 
 fn pre_process_blocks(chapter: &mut Chapter, date: NaiveDate) -> Result<()> {
-    let mut node = Node::from(Segments::try_from(chapter.content.clone())?.0);
-    node.value += ExpressionVariable::Date(date);
+    let clauses = parser::find_all_clauses(chapter.content.as_str())?;
+    let clauses = clauses
+        .into_iter()
+        .map(|clause| Clause::try_from(clause))
+        .collect::<Result<Vec<Clause>>>()?;
+
+    let mut expr = Expression::new();
+    expr.set_date(date);
+
+    let node =
+        clauses
+            .into_iter()
+            .try_fold(Node::new(expr), |mut node, clause| -> Result<Node> {
+                node.add_child(clause.to_component()?);
+                Ok(node)
+            })?;
+
     chapter.content = node.render(&Expression::new())?;
 
     Ok(())
@@ -89,7 +108,6 @@ fn cfg_date(cfg: Option<&Map<String, Value>>) -> Result<NaiveDate> {
 mod tests {
 
     use super::*;
-    use crate::pre_process::block::Expression;
     use crate::time_span::TimeFrequency;
     use crate::Data;
     use crate::{Point, TimeSpan};
@@ -152,7 +170,8 @@ mod tests {
 
         let mut ch = Chapter::new(
             "test",
-            "{{# cat_purrs }}{{*table rows=[Quarterly Weekly ] cols=[change] }}{{/#}}".to_string(),
+            "{{# cat_purrs, Numbers }}{{*table, rows=[Quarterly, Weekly ], cols=[change] }}{{/#}}"
+                .to_string(),
             "test.md",
             vec![],
         );
@@ -160,7 +179,7 @@ mod tests {
 
         let expected_table = String::from(
             "
-| _ | change |
+| _ | Change |
 | --- | --- |
 | Quarterly | 233.3% |
 | Weekly | 25.0% |
@@ -175,9 +194,9 @@ mod tests {
     fn test_pre_process_blocks() {
         let mut ch = Chapter::new(
             "test",
-            "{{#cat_purrs }}
-        Weekly change in cat purrs was {{change Weekly Words }}.
-        Quarterly change in cat purrs was {{change Quarterly}} compared to {{prev Quarterly}}.{{/#}}
+            "{{#cat_purrs, Words }}
+        Weekly change in cat purrs was {{change, Weekly }}.
+        Quarterly change in cat purrs was {{change, Quarterly}} compared to {{prev, Quarterly}}.{{/#}}
         "
             .to_string(),
             "test.md",
@@ -191,7 +210,7 @@ mod tests {
             ch.content,
             "
         Weekly change in cat purrs was up 25.0%.
-        Quarterly change in cat purrs was 233.3% compared to 2021 (25th October to 31st October).
+        Quarterly change in cat purrs was up 233.3% compared to 2021 (25th October to 31st October).
         "
         );
     }
@@ -201,8 +220,8 @@ mod tests {
         let mut ch = Chapter::new(
             "test",
             "{{# fish_zooms  }}
-            {{avg_freq Daily Words }}
-            {{change Weekly Words}}
+            {{avg_freq, Daily, Words }}
+            {{change, Weekly, Words}}
             {{name}}
             {{description}}
             {{span}}
@@ -241,10 +260,10 @@ mod tests {
             "
 # Sample
 
-- {{# website_visits, Words }}Total website users were {{change Weekly}}, we are now averaging {{avg_freq Daily }}.
-- {{name}} are {{change Yearly }} compared to this same reporting period last year {{prev Yearly}}.{{/#}}
+- {{# website_visits, Words }}Total website users were {{change, Weekly}}, we are now averaging {{avg_freq, Daily }}.
+- {{name}} are {{change, Yearly }} compared to this same reporting period last year {{prev, Yearly}}.{{/#}}
             
-- {{# cat_purrs, Words }}{{name}} are {{change Quarterly}} since {{prev Quarterly}}{{/#}}"
+- {{# cat_purrs, Words }}{{name}} are {{change, Quarterly}} since {{prev, Quarterly}}{{/#}}"
                 .to_string(),
             "test.md",
             vec![],
@@ -266,22 +285,25 @@ mod tests {
 
     #[test]
     fn test_block_table() {
-        let text =
-            "{{# change }}{{*table cols=[Daily] rows=[cat_purrs dog_woofs fish_zooms]}}{{/#}}"
-                .to_string();
+        let mut ch = Chapter::new(
+            "test",
+            "{{# change, Numbers }}{{*table, cols=[Daily], rows=[cat_purrs, dog_woofs, fish_zooms]}}{{/#}}"
+                .to_string(),
+            "test.md",
+            vec![],
+        );
+        let date = NaiveDate::from_ymd(2022, 2, 4);
 
-        let mut node = Node::from(Segments::try_from(text).unwrap().0);
-        node.value.set_date(NaiveDate::from_ymd(2022, 2, 4));
-        let text = node.render(&Expression::new()).unwrap();
+        assert_eq!(pre_process_blocks(&mut ch, date).unwrap(), ());
 
         assert_eq!(
-            text,
+            ch.content,
             "
 | _ | Daily |
 | --- | --- |
-| cat_purrs | 25.0% |
-| dog_woofs | -60.9% |
-| fish_zooms | -14.3% |
+| Cat Purrs | 25.0% |
+| Dog Woofs | -60.9% |
+| Fish Zooms | -14.3% |
 "
             .to_string()
         );
@@ -291,7 +313,8 @@ mod tests {
     fn test_description_table() {
         let mut ch = Chapter::new(
             "test",
-            "{{*table rows=[cat_purrs dog_woofs fish_zooms] cols=[ fig description]}}".to_string(),
+            "{{*table, Words, rows=[cat_purrs, dog_woofs, fish_zooms], cols=[ fig, description]}}"
+                .to_string(),
             "test.md",
             vec![],
         );
@@ -301,11 +324,11 @@ mod tests {
         assert_eq!(
             ch.content,
             "
-| _ | fig | description |
+| _ | Number | Description |
 | --- | --- | --- |
-| cat_purrs | 10 | A measure of the number of times my cat purred |
-| dog_woofs | 25 | A measure of the number of times my dog woofed |
-| fish_zooms | 3 | A measure of the number of times my fish zoomed |
+| Cat Purrs | 10 | A measure of the number of times my cat purred |
+| Dog Woofs | 25 | A measure of the number of times my dog woofed |
+| Fish Zooms | 3 | A measure of the number of times my fish zoomed |
 "
         );
     }
@@ -314,7 +337,7 @@ mod tests {
     fn test_group() {
         let mut ch = Chapter::new(
             "test",
-            "{{# Weekly, [cat_purrs dog_woofs fish_zooms]}}
+            "{{# Weekly, Numbers, [cat_purrs, dog_woofs, fish_zooms]}}
 # {{name}}
 {{fig}}
 {{/#}}"
