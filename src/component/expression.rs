@@ -1,40 +1,8 @@
-use super::arg::Arg;
-use super::tree::Component;
+use super::{arg::Arg, Component};
 use crate::functions::{AvgFreq, Change, Fig};
 use crate::{Data, RenderContext, TimeFrequency};
 use anyhow::{anyhow, Error, Result};
 use chrono::NaiveDate;
-use lazy_static::lazy_static;
-use std::collections::{HashMap, HashSet};
-
-lazy_static! {
-    pub static ref COMMANDS: HashMap<&'static str, &'static str> = {
-        [
-            ("fig", "Number"),
-            ("name", "Name"),
-            ("description", "Description"),
-            ("span", "Time Span"),
-            ("prev", "Previous Time Span"),
-            ("change", "Change"),
-            ("avg_freq", "Figure per Frequency"),
-            ("col", "Column"),
-            ("row", "Row"),
-            ("table", "Table"),
-        ]
-        .into_iter()
-        .collect()
-    };
-    pub static ref FUNCTIONS: HashSet<&'static str> = ["table"].iter().cloned().collect();
-    static ref FREQUENCIES: HashSet<&'static str> = {
-        ["Daily", "Weekly", "Monthly", "Quarterly", "Yearly"]
-            .iter()
-            .cloned()
-            .collect()
-    };
-    static ref DISPLAY_TYPES: HashSet<&'static str> =
-        ["Words", "Numbers",].iter().cloned().collect();
-    pub static ref DATA_NAMES: HashMap<String, String> = Data::read_names().unwrap();
-}
 
 pub struct CommandFreq {
     pub data: Data,

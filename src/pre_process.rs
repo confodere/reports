@@ -1,18 +1,10 @@
-use crate::parser::{self};
-use crate::pre_process::block::Expression;
-use crate::pre_process::tree::{Component, Node};
+use crate::component::{arg::Clause, expression::Expression, Component, Node};
+use crate::parser;
 use anyhow::Result;
 use chrono::{Local, NaiveDate};
 use mdbook::book::{BookItem, Chapter};
 use mdbook::preprocess::Preprocessor;
 use toml::{map::Map, value::Value};
-
-use self::arg::Clause;
-
-pub mod arg;
-pub mod block;
-pub mod flatten;
-pub mod tree;
 
 pub struct Processor;
 

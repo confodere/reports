@@ -1,3 +1,4 @@
+pub mod component;
 pub mod functions;
 pub mod parser;
 pub mod pre_process;

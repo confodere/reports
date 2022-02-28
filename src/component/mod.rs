@@ -1,8 +1,10 @@
-use std::{cell::RefCell, rc::Rc};
+pub mod arg;
+pub mod expression;
+pub mod flatten;
 
 use anyhow::Result;
-
-use super::block::Expression;
+use expression::Expression;
+use std::{cell::RefCell, rc::Rc};
 
 pub trait Component: core::fmt::Debug {
     fn render(&self, ctx: &Expression) -> Result<String>;
@@ -76,12 +78,10 @@ impl Component for Node {
 
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDate;
-
-    use crate::pre_process::arg::Arg;
-    use crate::time_span::TimeFrequency;
-
+    use super::arg::Arg;
     use super::*;
+    use crate::time_span::TimeFrequency;
+    use chrono::NaiveDate;
 
     #[test]
     fn create_node_public() {

@@ -1,6 +1,5 @@
+use super::{arg::ArgGroup, expression::Expression};
 use crate::functions::table::Table;
-
-use super::{arg::ArgGroup, block::Expression};
 use anyhow::{anyhow, Result};
 
 pub trait ItemOrCollection: Sized {

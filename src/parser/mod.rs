@@ -1,20 +1,16 @@
+pub mod substitute;
+
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
-use nom::bytes::complete::{is_not, take_until1};
-use nom::character::complete::digit1;
-use nom::error::Error;
-use nom::Finish;
 use nom::{
     branch::alt,
-    bytes::complete::tag,
-    character::complete::{alphanumeric1, multispace0},
-    error::ParseError,
+    bytes::complete::{is_not, tag, take_until1},
+    character::complete::{alphanumeric1, digit1, multispace0},
+    error::{Error, ParseError},
     multi::{many0, separated_list1},
     sequence::{delimited, pair, separated_pair, terminated, tuple},
-    IResult,
+    Finish, IResult,
 };
-
-pub mod substitute;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum RawArgGroup<'a> {

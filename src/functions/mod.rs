@@ -1,7 +1,8 @@
 pub mod display;
 pub mod table;
 
-use crate::pre_process::block::{CommandDisplay, CommandFreq};
+use self::display::FloatFormatter;
+use crate::component::expression::{CommandDisplay, CommandFreq};
 use crate::time_span::{TimeFrequency, TimeSpan, TimeSpanIter};
 use crate::{Metric, Point};
 use anyhow::{anyhow, Error, Result};
@@ -9,8 +10,6 @@ use display::RenderContext;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::{self, Display};
-
-use self::display::FloatFormatter;
 
 pub trait Figure {
     fn fig(&self) -> f64;

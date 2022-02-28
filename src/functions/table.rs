@@ -1,7 +1,7 @@
-use crate::pre_process::arg::Arg;
-use crate::pre_process::{
-    block::{Command, Expression},
-    tree::Component,
+use crate::component::{
+    arg::Arg,
+    expression::{Command, Expression},
+    Component,
 };
 use anyhow::Result;
 
