@@ -232,33 +232,32 @@ impl Clause<'_> {
     }
 }
 
+// Relies on the passed x to be a into iterable that implements TryFrom
+macro_rules! try_from_vec {
+    ( $t:ty, $x:ident ) => {{
+        let mut new_objs = vec![];
+        for obj in $x {
+            new_objs.push(<$t>::try_from(obj)?);
+        }
+        Ok(new_objs)
+    } as Result<Vec<$t>>};
+}
+
 impl<'a> TryFrom<RawClause<'a>> for Clause<'a> {
     type Error = Error;
 
     fn try_from(raw: RawClause<'a>) -> Result<Self, Self::Error> {
         match raw {
-            RawClause::Function(arg_groups) => Ok(Clause::Function(
-                arg_groups
-                    .into_iter()
-                    .map(|group| ArgGroup::try_from(group))
-                    .collect::<Result<_>>()?,
-            )),
+            RawClause::Function(arg_groups) => {
+                Ok(Clause::Function(try_from_vec!(ArgGroup, arg_groups)?))
+            }
             RawClause::NamedFunction(name, arg_groups) => Ok(Clause::NamedFunction(
                 name,
-                arg_groups
-                    .into_iter()
-                    .map(|group| ArgGroup::try_from(group))
-                    .collect::<Result<_>>()?,
+                try_from_vec!(ArgGroup, arg_groups)?,
             )),
             RawClause::Block(arg_groups, clauses) => Ok(Clause::Block(
-                arg_groups
-                    .into_iter()
-                    .map(|group| ArgGroup::try_from(group))
-                    .collect::<Result<_>>()?,
-                clauses
-                    .into_iter()
-                    .map(|clause| Clause::try_from(clause))
-                    .collect::<Result<_>>()?,
+                try_from_vec!(ArgGroup, arg_groups)?,
+                try_from_vec!(Clause, clauses)?,
             )),
             RawClause::Text(text) => Ok(Clause::Text(text)),
         }
