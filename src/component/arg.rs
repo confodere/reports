@@ -1,7 +1,7 @@
-use super::expression::Expression;
-use super::flatten::{find_table, mutate, ItemOrCollection};
+use super::expression::{Expression, Function};
+use super::flatten::{mutate, ItemOrCollection};
 use super::{Component, Node, Text};
-use crate::functions::{display::RenderContext, table::Table};
+use crate::functions::display::RenderContext;
 use crate::parser::{self, RawArgGroup, RawClause};
 use crate::Data;
 use crate::TimeFrequency;
@@ -180,61 +180,6 @@ impl ItemOrCollection for ArgGroup<'_> {
                 collection
             }
             ArgGroup::Arg(arg) => std::slice::from_ref(arg),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum Function {
-    Expressions(Vec<Expression>),
-    Table(Table),
-}
-
-impl Function {
-    /// Matches a name keyword to an enum variant and tries to create that variant from `groups`.
-    pub fn from_labelled_groups(name: &str, groups: Vec<ArgGroup<'_>>) -> Result<Self> {
-        match name {
-            "expression" => Function::try_new_expression(groups),
-            "table" => Function::try_new_table(groups),
-            _ => return Err(anyhow!("Unknown function type {name}")),
-        }
-    }
-
-    /// Assumes an unlabelled group is an `Expression`, so tries to create that variant.
-    pub fn from_groups(groups: Vec<ArgGroup<'_>>) -> Result<Self> {
-        Function::try_new_expression(groups)
-    }
-
-    fn try_new_expression(groups: Vec<ArgGroup<'_>>) -> Result<Self> {
-        let var_groups = mutate(ItemOrCollection::collection(groups));
-
-        // Translate to expressions by filling args by order into an empty expression
-        let expressions = var_groups
-            .into_iter()
-            .map(|group| {
-                group.into_iter().fold(Expression::new(), |mut expr, arg| {
-                    expr.fill_arg(arg);
-                    expr
-                })
-            })
-            .collect::<Vec<Expression>>();
-
-        Ok(Function::Expressions(expressions))
-    }
-    fn try_new_table(groups: Vec<ArgGroup<'_>>) -> Result<Self> {
-        Ok(Function::Table(find_table(groups)?))
-    }
-}
-
-impl Component for Function {
-    fn render(&self, ctx: &Expression) -> Result<String> {
-        match self {
-            Function::Expressions(exprs) => Ok(exprs
-                .into_iter()
-                .map(|expr| expr.render(ctx))
-                .collect::<Result<Vec<String>>>()?
-                .join(" ")),
-            Function::Table(t) => t.render(ctx),
         }
     }
 }
