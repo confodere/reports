@@ -91,22 +91,22 @@ impl TryFrom<CommandFreq> for Change {
 
 impl Display for Change {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let description: Option<Box<dyn Fn((f64, String)) -> String>> =
+            Some(Box::new(|(num, num_print)| {
+                let description = if num > 0.0 { "up" } else { "down" };
+                let num_print = if let Some(val) = num_print.strip_prefix("-") {
+                    val
+                } else {
+                    num_print.as_str()
+                };
+                format!("{description} {num_print}")
+            }));
+
         let formatter = match self.display_type() {
-            RenderContext::Numbers => FloatFormatter::new_all(true, None, Some(1), self.fig()),
-            RenderContext::Words => FloatFormatter::new_all(
-                true,
-                Some(Box::new(|(num, num_print)| {
-                    let description = if num > 0.0 { "up" } else { "down" };
-                    let num_print = if let Some(val) = num_print.strip_prefix("-") {
-                        val
-                    } else {
-                        num_print.as_str()
-                    };
-                    format!("{description} {num_print}")
-                })),
-                Some(1),
-                self.fig(),
-            ),
+            RenderContext::Numbers => FloatFormatter::new_all(true, &None, Some(1), self.fig()),
+            RenderContext::Words => {
+                FloatFormatter::new_all(true, &description, Some(1), self.fig())
+            }
         };
         formatter.fmt(f)
     }

@@ -29,22 +29,22 @@ impl FromStr for RenderContext {
 
 /// Formatter for floats to be used for rendering support by other function modules
 ///
-pub struct FloatFormatter {
+pub struct FloatFormatter<'a> {
     percentage: bool,
-    description: Option<Box<dyn Fn((f64, String)) -> String>>,
+    description: &'a Option<Box<dyn Fn((f64, String)) -> String>>,
     precision: Option<usize>,
     num: f64,
 }
 
-impl FloatFormatter {
-    pub fn new(num: f64) -> FloatFormatter {
+impl<'a> FloatFormatter<'a> {
+    pub fn new(num: f64) -> FloatFormatter<'a> {
         FloatFormatter {
             num,
             ..Default::default()
         }
     }
 
-    pub fn new_percentage(num: f64) -> FloatFormatter {
+    pub fn new_percentage(num: f64) -> FloatFormatter<'a> {
         FloatFormatter {
             num,
             percentage: true,
@@ -52,7 +52,7 @@ impl FloatFormatter {
         }
     }
 
-    pub fn new_precision(num: f64, precision: usize) -> FloatFormatter {
+    pub fn new_precision(num: f64, precision: usize) -> FloatFormatter<'a> {
         FloatFormatter {
             precision: Some(precision),
             num,
@@ -62,10 +62,10 @@ impl FloatFormatter {
 
     pub fn new_all(
         percentage: bool,
-        description: Option<Box<dyn Fn((f64, String)) -> String>>,
+        description: &'a Option<Box<dyn Fn((f64, String)) -> String>>,
         precision: Option<usize>,
         num: f64,
-    ) -> FloatFormatter {
+    ) -> FloatFormatter<'a> {
         FloatFormatter {
             percentage,
             description,
@@ -75,19 +75,19 @@ impl FloatFormatter {
     }
 }
 
-impl Default for FloatFormatter {
+impl Default for FloatFormatter<'_> {
     /// `percentage`: false `description`: none `precision`: Some(0) `num`: 0
     fn default() -> Self {
         FloatFormatter {
             percentage: false,
-            description: None,
+            description: &None,
             precision: Some(0),
             num: 0.0,
         }
     }
 }
 
-impl Display for FloatFormatter {
+impl Display for FloatFormatter<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let rendered = if self.percentage {
             if let Some(precision) = self.precision {
@@ -145,15 +145,13 @@ mod tests {
 
     #[test]
     fn test_float_formatter() {
-        let formatter = FloatFormatter::new_all(
-            true,
+        let description: Option<Box<dyn Fn((f64, String)) -> String>> =
             Some(Box::new(|(num, num_print)| {
                 let description = if num > 0.0 { "up" } else { "down" };
                 format!("{description} {num_print}")
-            })),
-            Some(1),
-            1.2345,
-        );
+            }));
+
+        let formatter = FloatFormatter::new_all(true, &description, Some(1), 1.2345);
         assert_eq!(formatter.to_string(), "up 123.4%".to_string());
     }
 

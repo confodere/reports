@@ -1,4 +1,5 @@
 pub mod arg;
+pub mod command;
 pub mod expression;
 pub mod flatten;
 
