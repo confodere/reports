@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+<svg width="94.139mm" height="18.841mm" version="1.1" viewBox="0 0 94.139 18.841" xmlns="http://www.w3.org/2000/svg">
+ <defs>
+  <marker id="marker313835" overflow="visible" orient="auto">
+   <path transform="matrix(-.8 0 0 -.8 -10 0)" d="m0 0 5-5-17.5 5 17.5 5z" fill="context-stroke" fill-rule="evenodd" stroke="context-stroke" stroke-width="1pt"/>
+  </marker>
+  <marker id="marker313835-5" overflow="visible" orient="auto">
+   <path transform="matrix(-.8 0 0 -.8 -10 0)" d="m0 0 5-5-17.5 5 17.5 5z" fill="context-stroke" fill-rule="evenodd" stroke="context-stroke" stroke-width="1pt"/>
+  </marker>
+ </defs>
+ <g transform="translate(-12.937 -17.937)">
+  <g font-family="sans-serif">
+   <text x="47.566845" y="24.693615" font-size="1.7639px" stroke-width=".26458" style="line-height:1.25" xml:space="preserve"><tspan x="47.566845" y="24.693615" font-family="Hack" font-size="1.7639px" stroke-width=".26458" style="font-variant-caps:normal;font-variant-east-asian:normal;font-variant-ligatures:normal;font-variant-numeric:normal"><tspan fill="#ff0000">{{</tspan> <tspan fill="#0000ff">cat_purrs</tspan><tspan fill="#ff0000">,</tspan> <tspan fill="#0000ff">fig</tspan><tspan fill="#ff0000">,</tspan> <tspan fill="#0000ff">Numbers<tspan fill="#ff0000">,</tspan> 2022-02-04</tspan> <tspan fill="#ff0000">}}</tspan></tspan></text>
+   <text transform="matrix(0 .8174 -1.2234 0 0 0)" x="29.665735" y="-42.722263" font-size="7.4201px" stroke-width="1.113" style="line-height:1.25" xml:space="preserve"><tspan x="29.665735" y="-42.722263" font-family="'Fira Code'" font-size="7.4201px" font-weight="300" stroke-width="1.113" style="font-variant-caps:normal;font-variant-east-asian:normal;font-variant-ligatures:normal;font-variant-numeric:normal">}</tspan></text>
+   <text transform="matrix(0 .72881 -1.3721 0 0 0)" x="32.086868" y="-39.201046" font-size="31.469px" stroke-width="4.7203" style="line-height:1.25" xml:space="preserve"><tspan x="32.086868" y="-39.201046" font-family="'Fira Code'" font-size="31.469px" font-weight="300" stroke-width="4.7203" style="font-variant-caps:normal;font-variant-east-asian:normal;font-variant-ligatures:normal;font-variant-numeric:normal">}</tspan></text>
+   <text transform="matrix(0 1.1506 -.86912 0 0 0)" x="22.636696" y="-118.18805" font-size="5.1982px" stroke-width=".77972" style="line-height:1.25" xml:space="preserve"><tspan x="22.636696" y="-118.18805" font-family="'Fira Code'" font-size="5.1982px" font-weight="300" stroke-width=".77972" style="font-variant-caps:normal;font-variant-east-asian:normal;font-variant-ligatures:normal;font-variant-numeric:normal">}</tspan></text>
+   <text x="52.322021" y="28.63081" font-size="1.7639px" stroke-width=".26458" style="line-height:1.25" xml:space="preserve"><tspan x="52.322021" y="28.63081" stroke-width=".26458">variable</tspan></text>
+   <text transform="matrix(0 .91868 -1.0885 0 0 0)" x="26.394541" y="-63.201206" font-size="6.602px" stroke-width=".9903" style="line-height:1.25" xml:space="preserve"><tspan x="26.394541" y="-63.201206" font-family="'Fira Code'" font-size="6.602px" font-weight="300" stroke-width=".9903" style="font-variant-caps:normal;font-variant-east-asian:normal;font-variant-ligatures:normal;font-variant-numeric:normal">}</tspan></text>
+   <text transform="matrix(0 -.74766 1.3375 0 0 0)" x="-31.431755" y="64.607422" font-size="7.7845px" stroke-width="1.1677" style="line-height:1.25" xml:space="preserve"><tspan x="-31.431755" y="64.607422" font-family="'Fira Code'" font-size="7.7845px" font-weight="300" stroke-width="1.1677" style="font-variant-caps:normal;font-variant-east-asian:normal;font-variant-ligatures:normal;font-variant-numeric:normal">}</tspan></text>
+   <g font-size="1.7639px" stroke-width=".26458">
+    <text x="68.156235" y="28.630686" style="line-height:1.25" xml:space="preserve"><tspan x="68.156235" y="28.630686" stroke-width=".26458">context</tspan></text>
+    <text x="64.778122" y="36.355083" style="line-height:1.25" xml:space="preserve"><tspan x="64.778122" y="36.355083" stroke-width=".26458">expression</tspan></text>
+    <text x="59.999561" y="20.163881" style="line-height:1.25" xml:space="preserve"><tspan x="59.999561" y="20.163881" stroke-width=".26458">command</tspan></text>
+    <text x="80.703247" y="20.163557" style="line-height:1.25" xml:space="preserve"><tspan x="80.703247" y="20.163557" stroke-width=".26458">date</tspan></text>
+   </g>
+   <text transform="matrix(0 -1.4197 -.70436 0 0 0)" x="-16.518785" y="-89.478073" font-size="4.0012px" stroke-width=".60019" style="line-height:1.25" xml:space="preserve"><tspan x="-16.518785" y="-89.478073" font-family="'Fira Code'" font-size="4.0012px" stroke-width=".60019" style="font-variant-caps:normal;font-variant-east-asian:normal;font-variant-ligatures:normal;font-variant-numeric:normal">}</tspan></text>
+   <text x="103.29747" y="24.808329" font-size="1.7639px" stroke-width=".26458" style="line-height:1.25" xml:space="preserve"><tspan x="103.29747" y="24.808329" stroke-width=".26458">10</tspan></text>
+  </g>
+  <g font-family="sans-serif" font-size="1.7639px" stroke-width=".26458">
+   <text x="12.840482" y="19.099901" style="line-height:1.25" xml:space="preserve"><tspan x="12.840482" y="19.099901" stroke-width=".26458">cat_purrs</tspan></text>
+   <text x="24.284149" y="19.278055" style="line-height:1.25" xml:space="preserve"><tspan x="24.284149" y="19.278055" stroke-width=".26458">date</tspan></text>
+   <text x="33.397705" y="19.278055" style="line-height:1.25" xml:space="preserve"><tspan x="33.397705" y="19.278055" stroke-width=".26458">value</tspan></text>
+  </g>
+  <g font-family="sans-serif" font-size="1.7639px" stroke-width=".26458">
+   <text x="16.279184" y="22.131435" style="line-height:1.25" xml:space="preserve"><tspan x="16.279184" y="22.131435" stroke-width=".26458">1</tspan></text>
+   <text x="16.124844" y="25.256672" style="line-height:1.25" xml:space="preserve"><tspan x="16.124844" y="25.256672" stroke-width=".26458">2</tspan></text>
+   <text x="16.202015" y="28.381908" style="line-height:1.25" xml:space="preserve"><tspan x="16.202015" y="28.381908" stroke-width=".26458">3</tspan></text>
+   <text x="21.538649" y="22.150923" style="line-height:1.25" xml:space="preserve"><tspan x="21.538649" y="22.150923" stroke-width=".26458">2022-01-28</tspan></text>
+   <text x="21.512188" y="25.258926" style="line-height:1.25" xml:space="preserve"><tspan x="21.512188" y="25.258926" stroke-width=".26458">2022-02-04</tspan></text>
+   <text x="21.685932" y="28.383926" style="line-height:1.25" xml:space="preserve"><tspan x="21.685932" y="28.383926" stroke-width=".26458">2022-02-11</tspan></text>
+   <text x="35.061935" y="22.14916" style="line-height:1.25" xml:space="preserve"><tspan x="35.061935" y="22.14916" stroke-width=".26458">8</tspan></text>
+   <text x="34.521305" y="25.258926" style="line-height:1.25" xml:space="preserve"><tspan x="34.521305" y="25.258926" stroke-width=".26458">10</tspan></text>
+   <text x="34.523949" y="28.382162" style="line-height:1.25" xml:space="preserve"><tspan x="34.523949" y="28.382162" stroke-width=".26458">12</tspan></text>
+  </g>
+  <g fill="none" stroke="#000" stroke-width=".1">
+   <path d="m15.28 20.038c21.635 0 21.802-0.03307 21.802-0.03307" opacity=".5"/>
+   <path d="m15.28 23.146c21.635 0 21.802-0.03307 21.802-0.03307" opacity=".5"/>
+   <path d="m15.28 26.271c21.635 0 21.802-0.03307 21.802-0.03307" opacity=".5"/>
+  </g>
+  <path d="m38.896 24.23c7.2411 0 7.3303-0.05232 7.3303-0.05232" fill="none" marker-end="url(#marker313835)" stroke="#000" stroke-width=".15" style="paint-order:normal"/>
+  <path d="m93.49 24.23c7.2411 0 7.3303-0.05232 7.3303-0.05232" fill="none" marker-end="url(#marker313835-5)" stroke="#000" stroke-width=".15" style="paint-order:normal"/>
+  <g font-family="sans-serif">
+   <text transform="matrix(0 .81189 -1.2317 0 0 0)" x="33.932285" y="-14.491016" font-size="17.932px" stroke-width="2.6898" style="line-height:1.25" xml:space="preserve"><tspan x="33.932285" y="-14.491016" font-family="'Fira Code'" font-size="17.932px" font-weight="300" stroke-width="2.6898" style="font-variant-caps:normal;font-variant-east-asian:normal;font-variant-ligatures:normal;font-variant-numeric:normal">}</tspan></text>
+   <text x="23.877447" y="36.395557" font-size="1.7639px" stroke-width=".26458" style="line-height:1.25" xml:space="preserve"><tspan x="23.877447" y="36.395557" stroke-width=".26458">data</tspan></text>
+   <text x="101.50977" y="30.61297" font-size="1.7639px" stroke-width=".26458" style="line-height:1.25" xml:space="preserve"><tspan x="101.50977" y="30.61297" stroke-width=".26458">output</tspan></text>
+  </g>
+ </g>
+</svg>
